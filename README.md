@@ -1,0 +1,32 @@
+# kika-cleaner
+
+CLI em Rust para localizar e remover lixo comum de projetos frontend e diretórios de trabalho.
+
+Escopo inicial:
+
+- `node_modules`
+- `dist`
+- `.next`
+- arquivos temporários como `.tmp`, `.temp`, `.bak`, `.old`, `.orig`, `.rej`, `.swp` e `.swo`
+- arquivos antigos, mas apenas em modo explícito com cutoff em dias
+
+## Uso
+
+`cargo run -- [path]`
+
+Executa um `dry-run` e mostra o que seria removido.
+
+`cargo run -- [path] --apply`
+
+Remove de fato os diretórios e arquivos encontrados.
+
+`cargo run -- [path] --apply --include-old-files --older-than-days 90`
+
+Além das regras padrão, remove arquivos regulares mais antigos que 90 dias.
+
+## Segurança
+
+- O modo padrão é `dry-run`
+- Remoção real só acontece com `--apply`
+- Limpeza de arquivos antigos exige `--include-old-files` e `--older-than-days`
+- O scanner ignora links simbólicos, `.git` e `target`
