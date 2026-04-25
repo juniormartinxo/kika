@@ -5,7 +5,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::cli::Config;
+use crate::cli::{Command, Config};
 
 const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
     ("node_modules", CleanupKind::NodeModules),
@@ -15,6 +15,7 @@ const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
 
 const TEMP_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
 const TEMP_FILE_EXTENSIONS: &[&str] = &["tmp", "temp", "bak", "old", "orig", "rej", "swp", "swo"];
+const TEMP_FILE_SUFFIXES: &[&str] = &["Zone.Identifier"];
 const PROTECTED_DIRS: &[&str] = &[".git", "target"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -58,7 +59,7 @@ pub struct ScanReport {
 }
 
 impl ScanReport {
-    fn total_bytes(&self) -> u64 {
+    pub fn total_bytes(&self) -> u64 {
         self.candidates
             .iter()
             .map(|candidate| candidate.size_bytes)
@@ -150,58 +151,70 @@ pub fn scan(config: &Config) -> Result<ScanReport, String> {
     Ok(scanner.report)
 }
 
-pub fn print_report(config: &Config, report: &ScanReport) {
-    let mode = if config.apply { "apply" } else { "dry-run" };
+pub fn render_report(config: &Config, report: &ScanReport) -> String {
+    let mut output = String::new();
 
-    println!("Mode: {mode}");
-    println!("Matches: {}", report.candidates.len());
-    println!(
-        "Estimated reclaimable space: {}",
+    output.push_str(&format!("Mode: {}\n", config.mode_label()));
+    output.push_str(&format!("Root: {}\n", config.root.display()));
+    output.push_str(&format!("Matches: {}\n", report.candidates.len()));
+    output.push_str(&format!(
+        "Estimated reclaimable space: {}\n",
         format_bytes(report.total_bytes())
-    );
+    ));
 
     if let Some(days) = config.older_than_days {
-        println!("Old file cutoff: {days} days");
+        output.push_str(&format!("Old file cutoff: {days} days\n"));
     }
 
     let counts = report.counts_by_kind();
     if !counts.is_empty() {
-        println!();
-        println!("By kind:");
+        output.push_str("\nBy kind:\n");
 
         for (kind, count) in counts {
-            println!("  - {:<12} {}", kind, count);
+            output.push_str(&format!("  - {:<12} {count}\n", kind));
         }
     }
 
     if !report.candidates.is_empty() {
-        println!();
-        println!("Candidates:");
+        output.push_str("\nCandidates:\n");
 
         for candidate in &report.candidates {
-            println!(
-                "  {} [{:<12}] {} ({})",
-                if config.apply { "DEL?" } else { "DRY " },
+            output.push_str(&format!(
+                "  {} [{:<12}] {} ({})\n",
+                candidate_prefix(config),
                 candidate.kind,
                 candidate.path.display(),
                 format_bytes(candidate.size_bytes)
-            );
+            ));
         }
     }
 
     if !report.warnings.is_empty() {
-        println!();
-        println!("Warnings:");
+        output.push_str("\nWarnings:\n");
 
         for warning in &report.warnings {
-            println!("  WARN {warning}");
+            output.push_str(&format!("  WARN {warning}\n"));
         }
     }
 
-    if !config.apply {
-        println!();
-        println!("Nothing was deleted. Re-run with --apply to remove the matched paths.");
+    if !config.should_apply() {
+        output.push('\n');
+
+        match config.command {
+            Command::Report => {
+                output.push_str(
+                    "Nothing was deleted. Use `clean --apply` to remove the matched paths.\n",
+                );
+            }
+            Command::Clean => {
+                output.push_str(
+                    "Nothing was deleted. Re-run with --apply to remove the matched paths.\n",
+                );
+            }
+        }
     }
+
+    output
 }
 
 pub fn apply_cleanup(report: ScanReport) -> ApplyOutcome {
@@ -372,6 +385,13 @@ fn matches_temp_file(path: &Path, name: &str) -> bool {
         return true;
     }
 
+    if TEMP_FILE_SUFFIXES
+        .iter()
+        .any(|suffix| name.ends_with(suffix))
+    {
+        return true;
+    }
+
     let extension = match path.extension().and_then(|value| value.to_str()) {
         Some(extension) => extension,
         None => return false,
@@ -461,9 +481,21 @@ fn format_bytes(bytes: u64) -> String {
     }
 }
 
+fn candidate_prefix(config: &Config) -> &'static str {
+    if config.should_apply() {
+        "DEL?"
+    } else {
+        "DRY "
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{CleanupKind, matches_temp_file, removable_dir_kind};
+    use super::{
+        CleanupCandidate, CleanupKind, ScanReport, matches_temp_file, removable_dir_kind,
+        render_report,
+    };
+    use crate::cli::{Command, Config};
     use std::path::Path;
 
     #[test]
@@ -482,6 +514,41 @@ mod tests {
         assert!(matches_temp_file(Path::new("/tmp/.DS_Store"), ".DS_Store"));
         assert!(matches_temp_file(Path::new("/tmp/file.tmp"), "file.tmp"));
         assert!(matches_temp_file(Path::new("/tmp/file.TEMP"), "file.TEMP"));
+        assert!(matches_temp_file(
+            Path::new("/tmp/image.png:Zone.Identifier"),
+            "image.png:Zone.Identifier"
+        ));
+        assert!(matches_temp_file(
+            Path::new("/tmp/Zone.Identifier"),
+            "Zone.Identifier"
+        ));
         assert!(!matches_temp_file(Path::new("/tmp/file.ts"), "file.ts"));
+    }
+
+    #[test]
+    fn renders_report_mode() {
+        let config = Config {
+            command: Command::Report,
+            root: Path::new("/tmp/work").to_path_buf(),
+            apply: false,
+            yes: false,
+            include_old_files: false,
+            older_than_days: None,
+            output: None,
+        };
+        let report = ScanReport {
+            candidates: vec![CleanupCandidate {
+                path: Path::new("/tmp/work/node_modules").to_path_buf(),
+                kind: CleanupKind::NodeModules,
+                size_bytes: 1024,
+            }],
+            warnings: Vec::new(),
+        };
+
+        let rendered = render_report(&config, &report);
+
+        assert!(rendered.contains("Mode: report"));
+        assert!(rendered.contains("Root: /tmp/work"));
+        assert!(rendered.contains("Nothing was deleted. Use `clean --apply`"));
     }
 }
