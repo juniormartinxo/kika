@@ -7,18 +7,36 @@ use std::time::{Duration, SystemTime};
 
 use crate::cli::{Config, GlobalCache};
 use crate::progress::{Spinner, group_digits};
-use crate::tools::Tool;
+use crate::tools::{Tool, home_dir};
 
-const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
-    ("node_modules", CleanupKind::NodeModules),
-    ("dist", CleanupKind::Dist),
-    (".next", CleanupKind::NextJs),
+/// Build outputs of JavaScript projects. They only count next to a
+/// `package.json`, so folders that merely share the name are left alone.
+const PROJECT_DIRS: &[(&str, CleanupKind)] =
+    &[("dist", CleanupKind::Dist), (".next", CleanupKind::NextJs)];
+
+/// `node_modules` and its renamed copies (`node_modules_old`, `node_modules.bak`).
+const NODE_MODULES_PREFIX: &str = "node_modules";
+
+/// Never descended into: they hold installed programs, editor extensions and
+/// system files, whose `node_modules` and `dist` are not project leftovers.
+/// Hidden directories (`.vscode`, `.cache`, `.git`...) are skipped as well.
+const SKIPPED_DIRS: &[&str] = &[
+    "AppData",
+    "Library",
+    "Program Files",
+    "Program Files (x86)",
+    "ProgramData",
+    "Windows",
+    "$Recycle.Bin",
 ];
 
-const TEMP_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
+/// Junk anywhere: these files never hold anything worth keeping.
+const JUNK_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
+const JUNK_FILE_SUFFIXES: &[&str] = &["Zone.Identifier"];
+
+/// Leftovers of editors and merges. Outside a git repository a `.bak` is often
+/// someone's only backup, so these only count inside one.
 const TEMP_FILE_EXTENSIONS: &[&str] = &["tmp", "temp", "bak", "old", "orig", "rej", "swp", "swo"];
-const TEMP_FILE_SUFFIXES: &[&str] = &["Zone.Identifier"];
-const PROTECTED_DIRS: &[&str] = &[".git"];
 
 /// A cache owned by a package manager: located with one command, cleaned with another.
 struct ToolCache {
@@ -257,17 +275,29 @@ pub fn scan(config: &Config, spinner: &Spinner) -> Result<ScanReport, String> {
         return Err(format!("{} is not a directory", root.display()));
     }
 
-    let cutoff = cutoff_for_old_files(config);
-    let mut scanner = Scanner::new(cutoff, spinner);
-    scanner.scan_dir(&root);
+    let mut report = scan_tree(&root, cutoff_for_old_files(config), spinner);
+    scan_global_caches(config, &mut report, spinner);
+    Ok(report)
+}
+
+fn scan_tree(root: &Path, cutoff: Option<SystemTime>, spinner: &Spinner) -> ScanReport {
+    let home = home_dir();
+    let in_repo = root
+        .ancestors()
+        .any(|dir| is_repository(dir, home.as_deref()));
+    let mut scanner = Scanner::new(cutoff, home, spinner);
+    scanner.scan_dir(root, in_repo);
     scanner
         .report
         .candidates
         .sort_by(|left, right| left.path.cmp(&right.path));
+    scanner.report
+}
 
-    let mut report = scanner.report;
-    scan_global_caches(config, &mut report, spinner);
-    Ok(report)
+/// A `.git` in the home directory itself is a dotfiles repository; counting it
+/// would make every `.bak` in the user's documents look like a project leftover.
+fn is_repository(dir: &Path, home: Option<&Path>) -> bool {
+    home != Some(dir) && dir.join(".git").exists()
 }
 
 fn scan_global_caches(config: &Config, report: &mut ScanReport, spinner: &Spinner) {
@@ -390,20 +420,23 @@ pub fn apply_cleanup(report: ScanReport, spinner: &Spinner) -> ApplyOutcome {
 
 struct Scanner<'a> {
     cutoff: Option<SystemTime>,
+    home: Option<PathBuf>,
     report: ScanReport,
     spinner: &'a Spinner,
 }
 
 impl<'a> Scanner<'a> {
-    fn new(cutoff: Option<SystemTime>, spinner: &'a Spinner) -> Self {
+    fn new(cutoff: Option<SystemTime>, home: Option<PathBuf>, spinner: &'a Spinner) -> Self {
         Self {
             cutoff,
+            home,
             report: ScanReport::default(),
             spinner,
         }
     }
 
-    fn scan_dir(&mut self, dir: &Path) {
+    fn scan_dir(&mut self, dir: &Path, in_repo: bool) {
+        let in_repo = in_repo || is_repository(dir, self.home.as_deref());
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
             Err(error) => {
@@ -454,10 +487,6 @@ impl<'a> Scanner<'a> {
             let name = name.to_string_lossy();
 
             if file_type.is_dir() {
-                if PROTECTED_DIRS.contains(&name.as_ref()) {
-                    continue;
-                }
-
                 if name.as_ref() == "target" {
                     if dir.join("Cargo.toml").is_file() {
                         self.push_dir_candidate(path, CleanupKind::CargoTarget);
@@ -465,12 +494,22 @@ impl<'a> Scanner<'a> {
                     continue;
                 }
 
-                if let Some(kind) = removable_dir_kind(name.as_ref()) {
-                    self.push_dir_candidate(path, kind);
+                match project_dir_kind(name.as_ref()) {
+                    Some(kind) if dir.join("package.json").is_file() => {
+                        self.push_dir_candidate(path, kind);
+                        continue;
+                    }
+                    // Without a `package.json` beside it, a `node_modules` holds
+                    // global installs or vendored packages: never look inside.
+                    Some(CleanupKind::NodeModules) => continue,
+                    _ => {}
+                }
+
+                if is_skipped_dir(name.as_ref()) {
                     continue;
                 }
 
-                self.scan_dir(&path);
+                self.scan_dir(&path, in_repo);
                 continue;
             }
 
@@ -489,7 +528,7 @@ impl<'a> Scanner<'a> {
                 }
             };
 
-            if matches_temp_file(path.as_path(), name.as_ref()) {
+            if is_junk_file(name.as_ref()) || (in_repo && has_temp_extension(&path)) {
                 self.report.candidates.push(CleanupCandidate {
                     path,
                     kind: CleanupKind::TempFile,
@@ -709,32 +748,35 @@ fn parse_docker_size(value: &str) -> Option<u64> {
     Some((number * multiplier).round() as u64)
 }
 
-fn removable_dir_kind(name: &str) -> Option<CleanupKind> {
-    REMOVABLE_DIRS
+fn project_dir_kind(name: &str) -> Option<CleanupKind> {
+    if name.starts_with(NODE_MODULES_PREFIX) {
+        return Some(CleanupKind::NodeModules);
+    }
+
+    PROJECT_DIRS
         .iter()
         .find_map(|(dir_name, kind)| (*dir_name == name).then_some(*kind))
 }
 
-fn matches_temp_file(path: &Path, name: &str) -> bool {
-    if TEMP_FILE_NAMES.contains(&name) {
-        return true;
-    }
+fn is_skipped_dir(name: &str) -> bool {
+    name.starts_with('.') || SKIPPED_DIRS.contains(&name)
+}
 
-    if TEMP_FILE_SUFFIXES
-        .iter()
-        .any(|suffix| name.ends_with(suffix))
-    {
-        return true;
-    }
+fn is_junk_file(name: &str) -> bool {
+    JUNK_FILE_NAMES.contains(&name)
+        || JUNK_FILE_SUFFIXES
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+}
 
-    let extension = match path.extension().and_then(|value| value.to_str()) {
-        Some(extension) => extension,
-        None => return false,
-    };
-
-    TEMP_FILE_EXTENSIONS
-        .iter()
-        .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+fn has_temp_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|extension| {
+            TEMP_FILE_EXTENSIONS
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(extension))
+        })
 }
 
 fn measure_dir(dir: &Path, warnings: &mut Vec<String>) -> u64 {
@@ -827,37 +869,111 @@ fn candidate_prefix(config: &Config) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CleanupCandidate, CleanupKind, ScanReport, matches_temp_file, parse_docker_size,
-        removable_dir_kind, render_report,
+        CleanupCandidate, CleanupKind, ScanReport, has_temp_extension, is_junk_file, is_repository,
+        parse_docker_size, project_dir_kind, render_report, scan_tree,
     };
     use crate::cli::{Command, Config};
-    use std::path::Path;
+    use crate::progress::Spinner;
+    use std::fs;
+    use std::path::{Path, PathBuf};
 
     #[test]
-    fn detects_default_cleanup_directories() {
+    fn detects_project_directories() {
         assert_eq!(
-            removable_dir_kind("node_modules"),
+            project_dir_kind("node_modules"),
             Some(CleanupKind::NodeModules)
         );
-        assert_eq!(removable_dir_kind("dist"), Some(CleanupKind::Dist));
-        assert_eq!(removable_dir_kind(".next"), Some(CleanupKind::NextJs));
-        assert_eq!(removable_dir_kind("src"), None);
+        assert_eq!(
+            project_dir_kind("node_modules_old"),
+            Some(CleanupKind::NodeModules)
+        );
+        assert_eq!(project_dir_kind("dist"), Some(CleanupKind::Dist));
+        assert_eq!(project_dir_kind(".next"), Some(CleanupKind::NextJs));
+        assert_eq!(project_dir_kind("src"), None);
     }
 
     #[test]
-    fn detects_temp_files_by_name_and_extension() {
-        assert!(matches_temp_file(Path::new("/tmp/.DS_Store"), ".DS_Store"));
-        assert!(matches_temp_file(Path::new("/tmp/file.tmp"), "file.tmp"));
-        assert!(matches_temp_file(Path::new("/tmp/file.TEMP"), "file.TEMP"));
-        assert!(matches_temp_file(
-            Path::new("/tmp/image.png:Zone.Identifier"),
-            "image.png:Zone.Identifier"
-        ));
-        assert!(matches_temp_file(
-            Path::new("/tmp/Zone.Identifier"),
-            "Zone.Identifier"
-        ));
-        assert!(!matches_temp_file(Path::new("/tmp/file.ts"), "file.ts"));
+    fn detects_junk_and_temp_files() {
+        assert!(is_junk_file(".DS_Store"));
+        assert!(is_junk_file("Thumbs.db"));
+        assert!(is_junk_file("image.png:Zone.Identifier"));
+        assert!(!is_junk_file("notes.bak"));
+
+        assert!(has_temp_extension(Path::new("/tmp/file.tmp")));
+        assert!(has_temp_extension(Path::new("/tmp/file.TEMP")));
+        assert!(!has_temp_extension(Path::new("/tmp/file.ts")));
+    }
+
+    #[test]
+    fn ignores_a_dotfiles_repository_in_home() {
+        let home = std::env::temp_dir().join(format!("kika-home-{}", std::process::id()));
+        fs::create_dir_all(home.join(".git")).unwrap();
+
+        assert!(is_repository(&home, None));
+        assert!(!is_repository(&home, Some(&home)));
+
+        fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn only_matches_leftovers_of_real_projects() {
+        let root = std::env::temp_dir().join(format!("kika-scan-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dirs = [
+            "app/.git",
+            "app/node_modules/react",
+            "app/node_modules_old/@firebase/auth/dist",
+            "app/dist",
+            "app/.next",
+            "app/src",
+            "vite-only/dist",
+            "global/lib/node_modules/typescript/dist",
+            "AppData/Local/Programs/cursor/resources/app/node_modules",
+            ".vscode/extensions/eslint/node_modules",
+            "Documents/IRPF",
+        ];
+        for dir in dirs {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        let files = [
+            "app/package.json",
+            "app/src/notes.bak",
+            "app/node_modules_old/@firebase/auth/package.json",
+            "AppData/Local/Programs/cursor/resources/app/package.json",
+            ".vscode/extensions/eslint/package.json",
+            "Documents/IRPF/2014.BAK",
+            "Documents/Thumbs.db",
+        ];
+        for file in files {
+            fs::write(root.join(file), "x").unwrap();
+        }
+
+        let report = scan_tree(&root, None, &Spinner::hidden());
+        let found: Vec<(PathBuf, CleanupKind)> = report
+            .candidates
+            .into_iter()
+            .map(|candidate| {
+                let relative = candidate.path.strip_prefix(&root).unwrap().to_path_buf();
+                (relative, candidate.kind)
+            })
+            .collect();
+
+        assert_eq!(
+            found,
+            vec![
+                (PathBuf::from("Documents/Thumbs.db"), CleanupKind::TempFile),
+                (PathBuf::from("app/.next"), CleanupKind::NextJs),
+                (PathBuf::from("app/dist"), CleanupKind::Dist),
+                (PathBuf::from("app/node_modules"), CleanupKind::NodeModules),
+                (
+                    PathBuf::from("app/node_modules_old"),
+                    CleanupKind::NodeModules
+                ),
+                (PathBuf::from("app/src/notes.bak"), CleanupKind::TempFile),
+            ]
+        );
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]

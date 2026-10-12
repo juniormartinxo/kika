@@ -135,7 +135,7 @@ fn go_bin_dirs() -> Vec<PathBuf> {
     dirs
 }
 
-fn home_dir() -> Option<PathBuf> {
+pub fn home_dir() -> Option<PathBuf> {
     env::var_os("HOME")
         .or_else(|| env::var_os("USERPROFILE"))
         .map(PathBuf::from)

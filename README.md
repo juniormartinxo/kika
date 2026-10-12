@@ -8,7 +8,7 @@ O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e
 soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.5.1-blue)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.0-blue)
 [![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
 ![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 
@@ -21,6 +21,7 @@ soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa
 ## ✨ Destaques
 
 - 🔍 **Relatório primeiro, sempre.** Rodar `kika` nunca apaga nada: ele mostra o que encontrou e quanto espaço dá para liberar
+- 🧯 **Só lixo de projeto.** Pastas de programas, extensões de editor e backups fora de repositórios ficam de fora, mesmo rodando no `$HOME` inteiro
 - 🗂️ **Lista interativa.** Os achados são agrupados por repositório git; marque os que quiser e limpe só eles, ou tudo de uma vez
 - 🌍 **Caches globais inclusos.** Docker build cache, pnpm store, uv, yarn, npm e os caches do Go entram no mesmo relatório
 - 🦀 **Rust do jeito certo.** `target/` só é tratado ao lado de um `Cargo.toml` e é limpo com `cargo clean --offline`
@@ -105,14 +106,14 @@ No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 
 **No diretório escaneado**
 
-| Alvo                         | Detalhes                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------- |
-| `node_modules`               | Dependências de projetos JavaScript/TypeScript                                   |
-| `dist`, `.next`              | Saídas de build                                                                  |
-| `target`                     | Só em projetos Rust (com `Cargo.toml` irmão), limpo via `cargo clean --offline`  |
-| Arquivos temporários         | `.tmp`, `.temp`, `.bak`, `.old`, `.orig`, `.rej`, `.swp` e `.swo`                |
-| `Zone.Identifier`            | Alternate data streams criados pelo Windows/WSL                                  |
-| Arquivos antigos             | Só com `--include-old-files` e `--older-than-days`                               |
+| Alvo                                 | Quando conta                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------- |
+| `node_modules`                       | Com `package.json` ao lado. Cópias renomeadas (`node_modules_old`, `node_modules.bak`) entram inteiras |
+| `dist`, `.next`                      | Com `package.json` ao lado                                                    |
+| `target`                             | Com `Cargo.toml` ao lado, limpo via `cargo clean --offline`                   |
+| `.tmp`, `.temp`, `.bak`, `.old`, `.orig`, `.rej`, `.swp`, `.swo` | Só dentro de um repositório git                   |
+| `.DS_Store`, `Thumbs.db`, `Zone.Identifier` | Em qualquer lugar                                                      |
+| Arquivos antigos                     | Só com `--include-old-files` e `--older-than-days`                            |
 
 **Caches globais** (fora do diretório escaneado, todos incluídos por padrão)
 
@@ -143,11 +144,28 @@ Sem flags de cache, todos entram. Com uma ou mais flags, só os escolhidos entra
 
 ## 🛡️ Segurança
 
+O kika foi feito para rodar até no `$HOME` inteiro sem tocar no que não é lixo de desenvolvimento.
+
+**Onde ele nunca entra**
+
+- Pastas ocultas (`.vscode`, `.vscode-server`, `.cursor`, `.cache`, `.config`, `.local`, `.cargo`, `.git`...), onde ficam extensões de editor, binários de ferramentas e configurações
+- `AppData`, `Library`, `Program Files`, `Program Files (x86)`, `ProgramData`, `Windows` e `$Recycle.Bin`, onde ficam programas instalados e arquivos do sistema
+- `node_modules` sem `package.json` ao lado, como instalações globais do npm
+- Links simbólicos
+- O diretório escaneado em si nunca é filtrado: `kika ~/.config/meu-projeto` funciona normalmente
+
+**O que ele não considera lixo**
+
+- `dist` e `node_modules` sem um `package.json` ao lado, nem os que estão dentro de outro `node_modules`
+- `.bak`, `.old` e afins fora de um repositório git, porque ali costumam ser o backup de alguém (IRPF, AutoCAD, SketchUp). Um `.git` no próprio home (repositório de dotfiles) não conta
+- `target/` sem `Cargo.toml` ao lado
+
+**Como ele apaga**
+
 - O comando padrão é o relatório, que nunca apaga nada
 - Remoção real só acontece com `kika clean` ou pela lista interativa, sempre com confirmação (a menos que você passe `--yes`)
+- A remoção é definitiva, sem passar pela lixeira. Revise a lista antes de confirmar "Clean all"
 - Limpeza de arquivos antigos exige `--include-old-files` e `--older-than-days`
-- O scanner ignora links simbólicos e `.git`
-- Diretórios `target` só são tratados em projetos Rust; os demais `target/` são ignorados
 - Sem `cargo` no `PATH`, o kika reporta o `target/`, mas a limpeza falha com aviso, sem remoção forçada
 - O antigo `--apply` ainda é aceito no `clean`, mas é redundante
 

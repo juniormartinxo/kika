@@ -33,6 +33,11 @@ mkfile "$KIKA_DEMO/projects/landing-page/notes.tmp" 4K
 
 mkfile "$KIKA_DEMO/projects/sketches/node_modules/three/build/three.module.js" 64M
 
+# Build outputs only count next to a package.json.
+for project in storefront storefront/apps/admin design-system landing-page sketches; do
+    echo '{}' > "$KIKA_DEMO/projects/$project/package.json"
+done
+
 mkfile "$KIKA_DEMO/caches/uv/wheels/torch.whl" 7300M
 mkfile "$KIKA_DEMO/caches/yarn/v6/npm-lodash.tgz" 2100M
 mkfile "$KIKA_DEMO/caches/npm/_cacache/content-v2/sha512/blob" 940M

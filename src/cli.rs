@@ -242,12 +242,15 @@ Commands:
   clean   Remove everything the report lists, after confirmation
 
 Scans a directory tree looking for:
-  - node_modules directories
-  - dist directories
-  - .next directories
+  - node_modules directories (and renamed copies like node_modules_old),
+    dist and .next directories, all next to a package.json
   - target directories of Rust projects (cleaned via `cargo clean --offline`)
-  - temporary files (.tmp, .temp, .bak, .old, .orig, .rej, .swp, .swo)
-  - Zone.Identifier files (Windows/WSL alternate data streams)
+  - temporary files (.tmp, .temp, .bak, .old, .orig, .rej, .swp, .swo),
+    only inside git repositories
+  - .DS_Store, Thumbs.db and Zone.Identifier files, anywhere
+
+Never looks inside hidden directories (.vscode, .cache, .git...), AppData,
+Library, Program Files, ProgramData or Windows.
 
 Global caches (outside the scanned path, all included by default):
   - Docker build cache, cleaned via `docker builder prune --force`

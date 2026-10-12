@@ -75,6 +75,11 @@ impl Spinner {
         }
     }
 
+    #[cfg(test)]
+    pub fn hidden() -> Self {
+        Self { active: None }
+    }
+
     /// Replaces the status line. The closure only runs while the spinner is
     /// visible, so callers don't pay for formatting otherwise.
     pub fn update(&self, line: impl FnOnce() -> (String, String)) {
