@@ -49,6 +49,7 @@ pub struct Config {
     pub older_than_days: Option<u64>,
     pub output: Option<PathBuf>,
     pub global_caches: BTreeSet<GlobalCache>,
+    pub plain: bool,
 }
 
 impl Config {
@@ -82,6 +83,7 @@ impl Config {
         let mut output = None;
         let mut selected_caches = BTreeSet::new();
         let mut no_caches = false;
+        let mut plain = false;
         let mut root = None;
 
         let mut iter = args.into_iter();
@@ -95,6 +97,7 @@ impl Config {
                 "--include-old-files" => include_old_files = true,
                 "--all-caches" => selected_caches.extend(GlobalCache::ALL),
                 "--no-caches" => no_caches = true,
+                "--plain" => plain = true,
                 "--older-than-days" => {
                     let value = iter
                         .next()
@@ -170,6 +173,7 @@ impl Config {
             older_than_days,
             output,
             global_caches,
+            plain,
         })
     }
 
@@ -220,11 +224,12 @@ fn help_message(bin: Option<&str>) -> String {
 
     format!(
         "Usage:
-  {bin} [report] [path] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
+  {bin} [report] [path] [--plain] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
   {bin} clean [path] [--yes] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
 
 Commands:
-  report  Show what can be removed, without deleting anything (default)
+  report  Show what can be removed, without deleting anything (default).
+          In a terminal it opens an interactive list to pick what to clean.
   clean   Remove everything the report lists, after confirmation
 
 Scans a directory tree looking for:
@@ -247,6 +252,7 @@ Without --yes, the clean command asks for confirmation before removing anything.
 Options:
   --yes                   Skip the confirmation prompt of clean
   --output <file>         Save the report to a file
+  --plain                 Print the text report instead of the interactive list
   --include-old-files     Also match regular files older than the cutoff
   --older-than-days <n>   Age threshold for old file cleanup
   -h, --help              Show this help message
@@ -357,6 +363,12 @@ mod tests {
 
         let error = Config::parse_from(vec!["--no-caches", "--uv-cache"]).unwrap_err();
         assert!(error.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn parses_plain_flag() {
+        assert!(!Config::parse_from(Vec::<String>::new()).unwrap().plain);
+        assert!(Config::parse_from(vec!["--plain"]).unwrap().plain);
     }
 
     #[test]

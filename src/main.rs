@@ -1,14 +1,18 @@
 mod cleanup;
 mod cli;
+mod groups;
 mod progress;
 mod tools;
+mod tui;
 
 use std::fs;
 use std::io::{self, IsTerminal, Write};
 
-use cleanup::{apply_cleanup, render_report, scan};
-use cli::{Config, parse_or_exit};
+use cleanup::{ScanReport, apply_cleanup, render_report, scan};
+use cli::{Command, Config, parse_or_exit};
+use groups::group_candidates;
 use progress::{Spinner, group_digits};
+use tui::Choice;
 
 fn main() {
     let config = parse_or_exit();
@@ -28,6 +32,10 @@ fn run(config: Config) -> Result<(), String> {
         group_digits(report.candidates.len() as u64)
     ));
 
+    if is_interactive(&config) && !report.candidates.is_empty() {
+        return run_interactive(&config, report);
+    }
+
     let rendered = render_report(&config, &report);
     write_or_print_report(&config, &rendered)?;
 
@@ -37,13 +45,58 @@ fn run(config: Config) -> Result<(), String> {
             return Ok(());
         }
 
-        let spinner = Spinner::start("Cleaning");
-        let outcome = apply_cleanup(report, &spinner);
-        spinner.finish("Cleanup finished");
-        outcome.print();
+        clean(report);
     }
 
     Ok(())
+}
+
+/// The checklist only makes sense for a report shown to a person at a terminal.
+fn is_interactive(config: &Config) -> bool {
+    config.command == Command::Report
+        && !config.plain
+        && config.output.is_none()
+        && io::stdin().is_terminal()
+        && io::stdout().is_terminal()
+}
+
+fn run_interactive(config: &Config, report: ScanReport) -> Result<(), String> {
+    let root = config
+        .root
+        .canonicalize()
+        .map_err(|error| format!("could not access {}: {error}", config.root.display()))?;
+    let ScanReport {
+        candidates,
+        warnings,
+        ..
+    } = report;
+
+    let choice = tui::select(group_candidates(&root, candidates), warnings.len())
+        .map_err(|error| format!("interactive screen failed: {error}"))?;
+
+    if !warnings.is_empty() {
+        eprintln!("Warnings:");
+        for warning in &warnings {
+            eprintln!("  WARN {warning}");
+        }
+    }
+
+    match choice {
+        Choice::Quit => println!("Nothing was deleted."),
+        Choice::Clean(candidates) => clean(ScanReport {
+            candidates,
+            ..ScanReport::default()
+        }),
+    }
+
+    Ok(())
+}
+
+fn clean(report: ScanReport) {
+    let spinner = Spinner::start("Cleaning");
+    let outcome = apply_cleanup(report, &spinner);
+    spinner.finish("Cleanup finished");
+    outcome.print();
 }
 
 fn write_or_print_report(config: &Config, rendered: &str) -> Result<(), String> {

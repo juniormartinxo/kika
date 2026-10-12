@@ -30,7 +30,24 @@ Enquanto verifica e limpa, o kika mostra no stderr um spinner com o progresso (e
 
 `kika [path]`
 
-Relatório completo do diretório (padrão: o atual) e de todos os caches globais. Não apaga nada.
+Relatório completo do diretório (padrão: o atual) e de todos os caches globais. No terminal, abre uma lista interativa:
+
+```
+┌ kika · 7 groups · 48.8 GB reclaimable ───────────────────────────┐
+│      Name                     Items      Size Contents           │
+│› [x] shop                         2    3.6 MB node_modules, dist │
+│  [ ] sketches                     1  195.3 KB node_modules       │
+│      Global caches                                               │
+│  [ ] uv cache                     1   24.5 GB uv-cache           │
+└──────────────────────────────────────────────────────────────────┘
+ Clean selected · 1 · 3.6 MB    Clean all · 48.8 GB
+```
+
+- Os itens são agrupados pelo repositório git mais próximo (sem subir acima do diretório escaneado); fora de um repositório, pelo diretório do projeto. Cada cache global é uma linha própria
+- `↑↓`/`j` `k` navegam, `espaço` (ou clique) marca, `a` marca/desmarca tudo, `Tab` foca os botões, `Enter` aciona, `c` limpa os selecionados, `C` limpa tudo, `q`/`Esc` sai sem apagar
+- Antes de limpar, uma confirmação mostra quantos grupos, itens e bytes serão removidos; só `y` confirma
+- Teclas digitadas durante o scan são descartadas, para não acionarem nada sem querer
+- Com pipe, `--output` ou `--plain`, sai o relatório em texto, sem interação
 
 `kika clean [path]`
 

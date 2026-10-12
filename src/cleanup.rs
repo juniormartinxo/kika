@@ -92,6 +92,23 @@ impl CleanupKind {
             Self::OldFile => "old-file",
         }
     }
+
+    /// Human name of a global cache; `None` for kinds found by the directory scan.
+    pub fn global_cache_name(self) -> Option<&'static str> {
+        match self {
+            Self::DockerBuildCache => Some("Docker build cache"),
+            Self::PnpmStore => Some("pnpm store"),
+            Self::UvCache => Some("uv cache"),
+            Self::YarnCache => Some("yarn cache"),
+            Self::NpmCache => Some("npm cache"),
+            Self::NodeModules
+            | Self::Dist
+            | Self::NextJs
+            | Self::CargoTarget
+            | Self::TempFile
+            | Self::OldFile => None,
+        }
+    }
 }
 
 impl fmt::Display for CleanupKind {
@@ -732,7 +749,7 @@ fn measure_dir(dir: &Path, warnings: &mut Vec<String>) -> u64 {
     total
 }
 
-fn format_bytes(bytes: u64) -> String {
+pub fn format_bytes(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
 
     let mut value = bytes as f64;
@@ -804,6 +821,7 @@ mod tests {
             older_than_days: None,
             output: None,
             global_caches: Default::default(),
+            plain: false,
         };
         let report = ScanReport {
             candidates: vec![CleanupCandidate {
