@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Command {
@@ -201,9 +201,12 @@ impl Config {
 
 pub fn parse_or_exit() -> Config {
     let mut args = env::args_os();
+    // `argv[0]` may be a full path (`C:\...\kika.exe`); the help only needs the name.
     let bin = args
         .next()
-        .map(|value| value.to_string_lossy().into_owned())
+        .as_deref()
+        .and_then(|value| Path::new(value).file_stem())
+        .map(|stem| stem.to_string_lossy().into_owned())
         .unwrap_or_else(|| "kika".to_string());
 
     match Config::parse_from(args) {
