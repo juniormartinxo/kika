@@ -5,7 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::cli::{Command, Config, GlobalCache};
+use crate::cli::{Config, GlobalCache};
+use crate::progress::{Spinner, group_digits};
 use crate::tools::Tool;
 
 const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
@@ -110,6 +111,7 @@ pub struct CleanupCandidate {
 pub struct ScanReport {
     pub candidates: Vec<CleanupCandidate>,
     pub warnings: Vec<String>,
+    pub scanned_entries: u64,
 }
 
 impl ScanReport {
@@ -182,7 +184,7 @@ impl ApplyOutcome {
     }
 }
 
-pub fn scan(config: &Config) -> Result<ScanReport, String> {
+pub fn scan(config: &Config, spinner: &Spinner) -> Result<ScanReport, String> {
     let root = config
         .root
         .canonicalize()
@@ -196,7 +198,7 @@ pub fn scan(config: &Config) -> Result<ScanReport, String> {
     }
 
     let cutoff = cutoff_for_old_files(config);
-    let mut scanner = Scanner::new(cutoff);
+    let mut scanner = Scanner::new(cutoff, spinner);
     scanner.scan_dir(&root);
     scanner
         .report
@@ -204,12 +206,19 @@ pub fn scan(config: &Config) -> Result<ScanReport, String> {
         .sort_by(|left, right| left.path.cmp(&right.path));
 
     let mut report = scanner.report;
-    scan_global_caches(config, &mut report);
+    scan_global_caches(config, &mut report, spinner);
     Ok(report)
 }
 
-fn scan_global_caches(config: &Config, report: &mut ScanReport) {
+fn scan_global_caches(config: &Config, report: &mut ScanReport, spinner: &Spinner) {
     for cache in &config.global_caches {
+        spinner.update(|| {
+            (
+                format!("Checking {}", global_cache_name(*cache)),
+                String::new(),
+            )
+        });
+
         let result = match cache {
             GlobalCache::DockerBuilder => docker_build_cache_candidate(),
             GlobalCache::PnpmStore => tool_cache_candidate(CleanupKind::PnpmStore, report),
@@ -284,30 +293,25 @@ pub fn render_report(config: &Config, report: &ScanReport) -> String {
     }
 
     if !config.should_apply() {
-        output.push('\n');
-
-        match config.command {
-            Command::Report => {
-                output.push_str(
-                    "Nothing was deleted. Use `clean --apply` to remove the matched paths.\n",
-                );
-            }
-            Command::Clean => {
-                output.push_str(
-                    "Nothing was deleted. Re-run with --apply to remove the matched paths.\n",
-                );
-            }
-        }
+        output.push_str("\nNothing was deleted. Run `kika clean` to remove the matched paths.\n");
     }
 
     output
 }
 
-pub fn apply_cleanup(report: ScanReport) -> ApplyOutcome {
+pub fn apply_cleanup(report: ScanReport, spinner: &Spinner) -> ApplyOutcome {
     let mut deleted = Vec::new();
     let mut failures = Vec::new();
+    let total = report.candidates.len();
 
-    for candidate in report.candidates {
+    for (index, candidate) in report.candidates.into_iter().enumerate() {
+        spinner.update(|| {
+            (
+                format!("Cleaning {}/{total} [{}]", index + 1, candidate.kind),
+                candidate.path.display().to_string(),
+            )
+        });
+
         match remove_candidate(&candidate) {
             Ok(reclaimed) => deleted.push(CleanupCandidate {
                 size_bytes: reclaimed,
@@ -320,16 +324,18 @@ pub fn apply_cleanup(report: ScanReport) -> ApplyOutcome {
     ApplyOutcome { deleted, failures }
 }
 
-struct Scanner {
+struct Scanner<'a> {
     cutoff: Option<SystemTime>,
     report: ScanReport,
+    spinner: &'a Spinner,
 }
 
-impl Scanner {
-    fn new(cutoff: Option<SystemTime>) -> Self {
+impl<'a> Scanner<'a> {
+    fn new(cutoff: Option<SystemTime>, spinner: &'a Spinner) -> Self {
         Self {
             cutoff,
             report: ScanReport::default(),
+            spinner,
         }
     }
 
@@ -342,7 +348,20 @@ impl Scanner {
             }
         };
 
+        self.spinner.update(|| {
+            (
+                format!(
+                    "Scanning {} entries · {} matches",
+                    group_digits(self.report.scanned_entries),
+                    group_digits(self.report.candidates.len() as u64)
+                ),
+                dir.display().to_string(),
+            )
+        });
+
         for entry in entries {
+            self.report.scanned_entries += 1;
+
             let entry = match entry {
                 Ok(entry) => entry,
                 Err(error) => {
@@ -377,23 +396,13 @@ impl Scanner {
 
                 if name.as_ref() == "target" {
                     if dir.join("Cargo.toml").is_file() {
-                        let size_bytes = measure_dir(&path, &mut self.report.warnings);
-                        self.report.candidates.push(CleanupCandidate {
-                            path,
-                            kind: CleanupKind::CargoTarget,
-                            size_bytes,
-                        });
+                        self.push_dir_candidate(path, CleanupKind::CargoTarget);
                     }
                     continue;
                 }
 
                 if let Some(kind) = removable_dir_kind(name.as_ref()) {
-                    let size_bytes = measure_dir(&path, &mut self.report.warnings);
-                    self.report.candidates.push(CleanupCandidate {
-                        path,
-                        kind,
-                        size_bytes,
-                    });
+                    self.push_dir_candidate(path, kind);
                     continue;
                 }
 
@@ -433,6 +442,18 @@ impl Scanner {
                 });
             }
         }
+    }
+
+    fn push_dir_candidate(&mut self, path: PathBuf, kind: CleanupKind) {
+        self.spinner
+            .update(|| (format!("Measuring {kind}"), path.display().to_string()));
+
+        let size_bytes = measure_dir(&path, &mut self.report.warnings);
+        self.report.candidates.push(CleanupCandidate {
+            path,
+            kind,
+            size_bytes,
+        });
     }
 
     fn matches_old_file(&mut self, metadata: &fs::Metadata) -> bool {
@@ -778,7 +799,6 @@ mod tests {
         let config = Config {
             command: Command::Report,
             root: Path::new("/tmp/work").to_path_buf(),
-            apply: false,
             yes: false,
             include_old_files: false,
             older_than_days: None,
@@ -791,14 +811,14 @@ mod tests {
                 kind: CleanupKind::NodeModules,
                 size_bytes: 1024,
             }],
-            warnings: Vec::new(),
+            ..Default::default()
         };
 
         let rendered = render_report(&config, &report);
 
         assert!(rendered.contains("Mode: report"));
         assert!(rendered.contains("Root: /tmp/work"));
-        assert!(rendered.contains("Nothing was deleted. Use `clean --apply`"));
+        assert!(rendered.contains("Nothing was deleted. Run `kika clean`"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 mod cleanup;
 mod cli;
+mod progress;
 mod tools;
 
 use std::fs;
@@ -7,6 +8,7 @@ use std::io::{self, IsTerminal, Write};
 
 use cleanup::{apply_cleanup, render_report, scan};
 use cli::{Config, parse_or_exit};
+use progress::{Spinner, group_digits};
 
 fn main() {
     let config = parse_or_exit();
@@ -18,7 +20,14 @@ fn main() {
 }
 
 fn run(config: Config) -> Result<(), String> {
-    let report = scan(&config)?;
+    let spinner = Spinner::start("Scanning");
+    let report = scan(&config, &spinner)?;
+    spinner.finish(&format!(
+        "Scanned {} entries, found {} matches",
+        group_digits(report.scanned_entries),
+        group_digits(report.candidates.len() as u64)
+    ));
+
     let rendered = render_report(&config, &report);
     write_or_print_report(&config, &rendered)?;
 
@@ -28,7 +37,9 @@ fn run(config: Config) -> Result<(), String> {
             return Ok(());
         }
 
-        let outcome = apply_cleanup(report);
+        let spinner = Spinner::start("Cleaning");
+        let outcome = apply_cleanup(report, &spinner);
+        spinner.finish("Cleanup finished");
         outcome.print();
     }
 
@@ -59,7 +70,7 @@ fn confirm_apply(config: &Config, report: &cleanup::ScanReport) -> Result<bool, 
 
     if !io::stdin().is_terminal() {
         return Err(
-            "clean --apply requires terminal confirmation; re-run with --yes to skip the prompt"
+            "clean requires terminal confirmation; re-run with --yes to skip the prompt"
                 .to_string(),
         );
     }
