@@ -99,16 +99,14 @@ fn find_in_dirs(name: &str, path: &OsString) -> Option<PathBuf> {
     env::split_paths(path).find_map(|dir| find_in_dir(name, &dir))
 }
 
-/// The executable `name` in `dir`. On Windows npm, pnpm and yarn are `.cmd`
-/// shims, so the usual executable extensions are tried as well.
+/// The executable `name` in `dir`. Windows only runs files with an executable
+/// extension, and Node.js ships `npm` (a shell script) right next to `npm.cmd`,
+/// so there only the extensions are tried.
 fn find_in_dir(name: &str, dir: &Path) -> Option<PathBuf> {
     let candidate = dir.join(name);
-    if candidate.is_file() {
-        return Some(candidate);
-    }
 
     if !cfg!(windows) {
-        return None;
+        return candidate.is_file().then_some(candidate);
     }
 
     ["exe", "cmd", "bat"]

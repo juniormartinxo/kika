@@ -8,7 +8,7 @@ O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e
 soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.5.0-blue)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.5.1-blue)
 [![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
 ![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 

@@ -221,10 +221,33 @@ impl ApplyOutcome {
     }
 }
 
+/// Absolute, symlink-free form of the scanned root. On Windows `canonicalize`
+/// returns verbatim paths (`\\?\C:\...`); plain drive paths go back to the
+/// familiar `C:\...` form so reports stay readable.
+pub fn canonical_root(path: &Path) -> io::Result<PathBuf> {
+    path.canonicalize().map(strip_verbatim_prefix)
+}
+
+fn strip_verbatim_prefix(path: PathBuf) -> PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::{Component, Prefix};
+
+        let is_disk = matches!(
+            path.components().next(),
+            Some(Component::Prefix(prefix)) if matches!(prefix.kind(), Prefix::VerbatimDisk(_))
+        );
+        if is_disk && let Some(plain) = path.to_str().and_then(|value| value.strip_prefix(r"\\?\"))
+        {
+            return PathBuf::from(plain);
+        }
+    }
+
+    path
+}
+
 pub fn scan(config: &Config, spinner: &Spinner) -> Result<ScanReport, String> {
-    let root = config
-        .root
-        .canonicalize()
+    let root = canonical_root(&config.root)
         .map_err(|error| format!("could not access {}: {error}", config.root.display()))?;
 
     let metadata = fs::metadata(&root)
@@ -863,6 +886,22 @@ mod tests {
         assert!(rendered.contains("Mode: report"));
         assert!(rendered.contains("Root: /tmp/work"));
         assert!(rendered.contains("Nothing was deleted. Run `kika clean`"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn strips_verbatim_prefix_from_disk_paths() {
+        use super::strip_verbatim_prefix;
+        use std::path::PathBuf;
+
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\C:\Users\junior")),
+            PathBuf::from(r"C:\Users\junior")
+        );
+        assert_eq!(
+            strip_verbatim_prefix(PathBuf::from(r"\\?\UNC\server\share")),
+            PathBuf::from(r"\\?\UNC\server\share")
+        );
     }
 
     #[test]

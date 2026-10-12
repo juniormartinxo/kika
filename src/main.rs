@@ -61,9 +61,7 @@ fn is_interactive(config: &Config) -> bool {
 }
 
 fn run_interactive(config: &Config, report: ScanReport) -> Result<(), String> {
-    let root = config
-        .root
-        .canonicalize()
+    let root = cleanup::canonical_root(&config.root)
         .map_err(|error| format!("could not access {}: {error}", config.root.display()))?;
     let ScanReport {
         candidates,
