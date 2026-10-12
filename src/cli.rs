@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -6,6 +7,37 @@ use std::path::PathBuf;
 pub enum Command {
     Clean,
     Report,
+}
+
+/// Caches managed by external tools, outside the scanned directory tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum GlobalCache {
+    DockerBuilder,
+    PnpmStore,
+    Uv,
+    Yarn,
+    Npm,
+}
+
+impl GlobalCache {
+    pub const ALL: [Self; 5] = [
+        Self::DockerBuilder,
+        Self::PnpmStore,
+        Self::Uv,
+        Self::Yarn,
+        Self::Npm,
+    ];
+
+    fn from_flag(flag: &str) -> Option<Self> {
+        match flag {
+            "--docker-builder" => Some(Self::DockerBuilder),
+            "--pnpm-store" => Some(Self::PnpmStore),
+            "--uv-cache" => Some(Self::Uv),
+            "--yarn-cache" => Some(Self::Yarn),
+            "--npm-cache" => Some(Self::Npm),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -17,6 +49,7 @@ pub struct Config {
     pub include_old_files: bool,
     pub older_than_days: Option<u64>,
     pub output: Option<PathBuf>,
+    pub global_caches: BTreeSet<GlobalCache>,
 }
 
 impl Config {
@@ -48,6 +81,7 @@ impl Config {
         let mut include_old_files = false;
         let mut older_than_days = None;
         let mut output = None;
+        let mut global_caches = BTreeSet::new();
         let mut root = None;
 
         let mut iter = args.into_iter();
@@ -59,6 +93,7 @@ impl Config {
                 "--apply" => apply = true,
                 "--yes" => yes = true,
                 "--include-old-files" => include_old_files = true,
+                "--all-caches" => global_caches.extend(GlobalCache::ALL),
                 "--older-than-days" => {
                     let value = iter
                         .next()
@@ -76,7 +111,11 @@ impl Config {
                     output = Some(PathBuf::from(value));
                 }
                 "-h" | "--help" => return Err(help_message(None)),
-                _ if arg.starts_with('-') => return Err(format!("unknown flag: {arg}")),
+                flag if flag.starts_with('-') => {
+                    let cache = GlobalCache::from_flag(flag)
+                        .ok_or_else(|| format!("unknown flag: {flag}"))?;
+                    global_caches.insert(cache);
+                }
                 _ => {
                     if root.is_some() {
                         return Err("only one root path can be provided".to_string());
@@ -120,6 +159,7 @@ impl Config {
             include_old_files,
             older_than_days,
             output,
+            global_caches,
         })
     }
 
@@ -171,9 +211,9 @@ fn help_message(bin: Option<&str>) -> String {
 
     format!(
         "Usage:
-  {bin} [path] [--apply] [--yes] [--output <file>] [--include-old-files --older-than-days <days>]
-  {bin} clean [path] [--apply] [--yes] [--output <file>] [--include-old-files --older-than-days <days>]
-  {bin} report [path] [--output <file>] [--include-old-files --older-than-days <days>]
+  {bin} [path] [--apply] [--yes] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
+  {bin} clean [path] [--apply] [--yes] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
+  {bin} report [path] [--output <file>] [cache flags] [--include-old-files --older-than-days <days>]
 
 Commands:
   clean   Scan and optionally remove matched paths
@@ -183,8 +223,16 @@ Scans a directory tree looking for:
   - node_modules directories
   - dist directories
   - .next directories
+  - target directories of Rust projects (cleaned via `cargo clean --offline`)
   - temporary files (.tmp, .temp, .bak, .old, .orig, .rej, .swp, .swo)
   - Zone.Identifier files (Windows/WSL alternate data streams)
+
+Optional global caches (outside the scanned path, opt-in):
+  - Docker build cache, cleaned via `docker builder prune --force`
+  - pnpm store, cleaned via `pnpm store prune`
+  - uv cache, cleaned via `uv cache clean`
+  - yarn cache, cleaned via `yarn cache clean`
+  - npm cache, cleaned via `npm cache clean --force`
 
 By default the command runs in dry-run mode and only reports what would be removed.
 Use clean --apply to delete the matched files and directories.
@@ -198,18 +246,28 @@ Options:
   --older-than-days <n>   Age threshold for old file cleanup
   -h, --help              Show this help message
 
+Cache flags:
+  --docker-builder        Also prune the Docker build cache
+  --pnpm-store            Also prune unreferenced packages from the pnpm store
+  --uv-cache              Also clean the uv cache
+  --yarn-cache            Also clean the yarn cache
+  --npm-cache             Also clean the npm cache
+  --all-caches            Enable every cache flag above
+
 Examples:
   {bin}
   {bin} clean /projects/frontend --apply
   {bin} clean /projects/frontend --apply --yes
   {bin} report /projects/frontend --output cleanup-report.txt
-  {bin} report /projects/archive --include-old-files --older-than-days 90"
+  {bin} report /projects/archive --include-old-files --older-than-days 90
+  {bin} clean --apply --docker-builder --pnpm-store
+  {bin} report --all-caches"
     )
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, Config};
+    use super::{Command, Config, GlobalCache};
 
     #[test]
     fn parses_default_root() {
@@ -256,5 +314,35 @@ mod tests {
     fn rejects_yes_without_apply() {
         let error = Config::parse_from(vec!["clean", "--yes"]).unwrap_err();
         assert!(error.contains("--yes requires --apply"));
+    }
+
+    #[test]
+    fn parses_global_cache_flags() {
+        let config = Config::parse_from(vec![
+            "report",
+            "--docker-builder",
+            "--npm-cache",
+            "--npm-cache",
+        ])
+        .unwrap();
+        assert_eq!(
+            config.global_caches.into_iter().collect::<Vec<_>>(),
+            vec![GlobalCache::DockerBuilder, GlobalCache::Npm]
+        );
+
+        let config = Config::parse_from(Vec::<String>::new()).unwrap();
+        assert!(config.global_caches.is_empty());
+    }
+
+    #[test]
+    fn all_caches_enables_every_cache() {
+        let config = Config::parse_from(vec!["clean", "--all-caches"]).unwrap();
+        assert_eq!(config.global_caches.len(), GlobalCache::ALL.len());
+    }
+
+    #[test]
+    fn rejects_unknown_flag() {
+        let error = Config::parse_from(vec!["--bogus"]).unwrap_err();
+        assert!(error.contains("unknown flag: --bogus"));
     }
 }

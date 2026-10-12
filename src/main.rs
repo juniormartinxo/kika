@@ -1,5 +1,6 @@
 mod cleanup;
 mod cli;
+mod tools;
 
 use std::fs;
 use std::io::{self, IsTerminal, Write};

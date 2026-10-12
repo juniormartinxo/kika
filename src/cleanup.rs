@@ -5,7 +5,8 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use crate::cli::{Command, Config};
+use crate::cli::{Command, Config, GlobalCache};
+use crate::tools::Tool;
 
 const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
     ("node_modules", CleanupKind::NodeModules),
@@ -16,13 +17,60 @@ const REMOVABLE_DIRS: &[(&str, CleanupKind)] = &[
 const TEMP_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
 const TEMP_FILE_EXTENSIONS: &[&str] = &["tmp", "temp", "bak", "old", "orig", "rej", "swp", "swo"];
 const TEMP_FILE_SUFFIXES: &[&str] = &["Zone.Identifier"];
-const PROTECTED_DIRS: &[&str] = &[".git", "target"];
+const PROTECTED_DIRS: &[&str] = &[".git"];
+
+/// A cache owned by a package manager: located with one command, cleaned with another.
+struct ToolCache {
+    kind: CleanupKind,
+    program: &'static str,
+    locate_args: &'static [&'static str],
+    clean_args: &'static [&'static str],
+    /// Part of the located directory that the clean command actually empties.
+    subdir: Option<&'static str>,
+}
+
+const TOOL_CACHES: &[ToolCache] = &[
+    ToolCache {
+        kind: CleanupKind::PnpmStore,
+        program: "pnpm",
+        locate_args: &["store", "path"],
+        clean_args: &["store", "prune"],
+        subdir: None,
+    },
+    ToolCache {
+        kind: CleanupKind::UvCache,
+        program: "uv",
+        locate_args: &["cache", "dir"],
+        clean_args: &["cache", "clean"],
+        subdir: None,
+    },
+    ToolCache {
+        kind: CleanupKind::YarnCache,
+        program: "yarn",
+        locate_args: &["cache", "dir"],
+        clean_args: &["cache", "clean"],
+        subdir: None,
+    },
+    ToolCache {
+        kind: CleanupKind::NpmCache,
+        program: "npm",
+        locate_args: &["config", "get", "cache"],
+        clean_args: &["cache", "clean", "--force"],
+        subdir: Some("_cacache"),
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum CleanupKind {
     NodeModules,
     Dist,
     NextJs,
+    CargoTarget,
+    DockerBuildCache,
+    PnpmStore,
+    UvCache,
+    YarnCache,
+    NpmCache,
     TempFile,
     OldFile,
 }
@@ -33,6 +81,12 @@ impl CleanupKind {
             Self::NodeModules => "node_modules",
             Self::Dist => "dist",
             Self::NextJs => ".next",
+            Self::CargoTarget => "cargo-target",
+            Self::DockerBuildCache => "docker-cache",
+            Self::PnpmStore => "pnpm-store",
+            Self::UvCache => "uv-cache",
+            Self::YarnCache => "yarn-cache",
+            Self::NpmCache => "npm-cache",
             Self::TempFile => "temp-file",
             Self::OldFile => "old-file",
         }
@@ -148,7 +202,39 @@ pub fn scan(config: &Config) -> Result<ScanReport, String> {
         .report
         .candidates
         .sort_by(|left, right| left.path.cmp(&right.path));
-    Ok(scanner.report)
+
+    let mut report = scanner.report;
+    scan_global_caches(config, &mut report);
+    Ok(report)
+}
+
+fn scan_global_caches(config: &Config, report: &mut ScanReport) {
+    for cache in &config.global_caches {
+        let result = match cache {
+            GlobalCache::DockerBuilder => docker_build_cache_candidate(),
+            GlobalCache::PnpmStore => tool_cache_candidate(CleanupKind::PnpmStore, report),
+            GlobalCache::Uv => tool_cache_candidate(CleanupKind::UvCache, report),
+            GlobalCache::Yarn => tool_cache_candidate(CleanupKind::YarnCache, report),
+            GlobalCache::Npm => tool_cache_candidate(CleanupKind::NpmCache, report),
+        };
+
+        match result {
+            Ok(candidate) => report.candidates.push(candidate),
+            Err(error) => report
+                .warnings
+                .push(format!("skipping {}: {error}", global_cache_name(*cache))),
+        }
+    }
+}
+
+fn global_cache_name(cache: GlobalCache) -> &'static str {
+    match cache {
+        GlobalCache::DockerBuilder => "Docker build cache",
+        GlobalCache::PnpmStore => "pnpm store",
+        GlobalCache::Uv => "uv cache",
+        GlobalCache::Yarn => "yarn cache",
+        GlobalCache::Npm => "npm cache",
+    }
 }
 
 pub fn render_report(config: &Config, report: &ScanReport) -> String {
@@ -223,7 +309,10 @@ pub fn apply_cleanup(report: ScanReport) -> ApplyOutcome {
 
     for candidate in report.candidates {
         match remove_candidate(&candidate) {
-            Ok(()) => deleted.push(candidate),
+            Ok(reclaimed) => deleted.push(CleanupCandidate {
+                size_bytes: reclaimed,
+                ..candidate
+            }),
             Err(error) => failures.push(format!("{}: {}", candidate.path.display(), error)),
         }
     }
@@ -283,6 +372,18 @@ impl Scanner {
 
             if file_type.is_dir() {
                 if PROTECTED_DIRS.contains(&name.as_ref()) {
+                    continue;
+                }
+
+                if name.as_ref() == "target" {
+                    if dir.join("Cargo.toml").is_file() {
+                        let size_bytes = measure_dir(&path, &mut self.report.warnings);
+                        self.report.candidates.push(CleanupCandidate {
+                            path,
+                            kind: CleanupKind::CargoTarget,
+                            size_bytes,
+                        });
+                    }
                     continue;
                 }
 
@@ -365,13 +466,160 @@ fn cutoff_for_old_files(config: &Config) -> Option<SystemTime> {
     Some(SystemTime::now() - Duration::from_secs(seconds))
 }
 
-fn remove_candidate(candidate: &CleanupCandidate) -> io::Result<()> {
+/// Removes the candidate and returns how many bytes were actually reclaimed.
+fn remove_candidate(candidate: &CleanupCandidate) -> io::Result<u64> {
     match candidate.kind {
         CleanupKind::NodeModules | CleanupKind::Dist | CleanupKind::NextJs => {
-            fs::remove_dir_all(&candidate.path)
+            fs::remove_dir_all(&candidate.path)?;
+            Ok(candidate.size_bytes)
         }
-        CleanupKind::TempFile | CleanupKind::OldFile => fs::remove_file(&candidate.path),
+        CleanupKind::CargoTarget => {
+            cargo_clean(&candidate.path)?;
+            Ok(candidate.size_bytes)
+        }
+        CleanupKind::DockerBuildCache => docker_builder_prune(candidate.size_bytes),
+        CleanupKind::PnpmStore
+        | CleanupKind::UvCache
+        | CleanupKind::YarnCache
+        | CleanupKind::NpmCache => clean_tool_cache(candidate),
+        CleanupKind::TempFile | CleanupKind::OldFile => {
+            fs::remove_file(&candidate.path)?;
+            Ok(candidate.size_bytes)
+        }
     }
+}
+
+fn cargo_clean(target_dir: &Path) -> io::Result<()> {
+    let project_dir = target_dir.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            format!("{} has no parent directory", target_dir.display()),
+        )
+    })?;
+
+    let cargo = Tool::find("cargo").map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::NotFound,
+            "cargo not found in PATH; skipping (install cargo or remove target/ manually)",
+        )
+    })?;
+
+    cargo.run(&["clean", "--offline"], Some(project_dir))?;
+    Ok(())
+}
+
+fn docker_build_cache_candidate() -> io::Result<CleanupCandidate> {
+    let docker = Tool::find("docker")?;
+    let stdout = docker.run(
+        &["system", "df", "--format", "{{.Type}}\t{{.Reclaimable}}"],
+        None,
+    )?;
+
+    let reclaimable = stdout
+        .lines()
+        .find_map(|line| line.strip_prefix("Build Cache\t"))
+        .ok_or_else(|| io::Error::other("build cache not listed by `docker system df`"))?;
+
+    let size_bytes = parse_docker_size(reclaimable)
+        .ok_or_else(|| io::Error::other(format!("could not parse Docker size: {reclaimable}")))?;
+
+    Ok(CleanupCandidate {
+        path: PathBuf::from("<docker build cache>"),
+        kind: CleanupKind::DockerBuildCache,
+        size_bytes,
+    })
+}
+
+fn docker_builder_prune(estimated_bytes: u64) -> io::Result<u64> {
+    let stdout = Tool::find("docker")?.run(&["builder", "prune", "--force"], None)?;
+
+    // buildx prints "Total:\t<size>", the legacy builder "Total reclaimed space: <size>".
+    let reclaimed = stdout
+        .lines()
+        .rev()
+        .find(|line| line.trim_start().starts_with("Total"))
+        .and_then(|line| line.split_whitespace().last())
+        .and_then(parse_docker_size);
+
+    Ok(reclaimed.unwrap_or(estimated_bytes))
+}
+
+fn tool_cache(kind: CleanupKind) -> &'static ToolCache {
+    TOOL_CACHES
+        .iter()
+        .find(|cache| cache.kind == kind)
+        .expect("every tool cache kind has an entry in TOOL_CACHES")
+}
+
+fn tool_cache_candidate(
+    kind: CleanupKind,
+    report: &mut ScanReport,
+) -> io::Result<CleanupCandidate> {
+    let cache = tool_cache(kind);
+    let stdout = Tool::find(cache.program)?.run(cache.locate_args, None)?;
+
+    // Tools may print warnings before the path, so only the last line counts.
+    let dir = stdout
+        .lines()
+        .map(str::trim)
+        .rfind(|line| !line.is_empty())
+        .map(PathBuf::from)
+        .ok_or_else(|| io::Error::other(format!("`{}` returned no path", cache.program)))?;
+    let dir = match cache.subdir {
+        Some(subdir) => dir.join(subdir),
+        None => dir,
+    };
+
+    if !dir.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("cache directory not found at {}", dir.display()),
+        ));
+    }
+
+    // Upper bound: some cleaners (e.g. `pnpm store prune`) keep referenced entries.
+    let size_bytes = measure_dir(&dir, &mut report.warnings);
+
+    Ok(CleanupCandidate {
+        path: dir,
+        kind,
+        size_bytes,
+    })
+}
+
+fn clean_tool_cache(candidate: &CleanupCandidate) -> io::Result<u64> {
+    let cache = tool_cache(candidate.kind);
+    Tool::find(cache.program)?.run(cache.clean_args, None)?;
+
+    let size_after = if candidate.path.is_dir() {
+        measure_dir(&candidate.path, &mut Vec::new())
+    } else {
+        0
+    };
+
+    Ok(candidate.size_bytes.saturating_sub(size_after))
+}
+
+/// Parses sizes printed by Docker (decimal units, e.g. `1.534GB`, `234kB`, `0B`).
+fn parse_docker_size(value: &str) -> Option<u64> {
+    let value = value.split_whitespace().next()?;
+    let split = value
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(value.len());
+    let (number, unit) = value.split_at(split);
+    let number: f64 = number.parse().ok()?;
+
+    let multiplier = match unit.to_ascii_lowercase().as_str() {
+        "" | "b" => 1.0,
+        "kb" => 1e3,
+        "mb" => 1e6,
+        "gb" => 1e9,
+        "tb" => 1e12,
+        "pb" => 1e15,
+        _ => return None,
+    };
+
+    Some((number * multiplier).round() as u64)
 }
 
 fn removable_dir_kind(name: &str) -> Option<CleanupKind> {
@@ -492,8 +740,8 @@ fn candidate_prefix(config: &Config) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CleanupCandidate, CleanupKind, ScanReport, matches_temp_file, removable_dir_kind,
-        render_report,
+        CleanupCandidate, CleanupKind, ScanReport, matches_temp_file, parse_docker_size,
+        removable_dir_kind, render_report,
     };
     use crate::cli::{Command, Config};
     use std::path::Path;
@@ -535,6 +783,7 @@ mod tests {
             include_old_files: false,
             older_than_days: None,
             output: None,
+            global_caches: Default::default(),
         };
         let report = ScanReport {
             candidates: vec![CleanupCandidate {
@@ -550,5 +799,15 @@ mod tests {
         assert!(rendered.contains("Mode: report"));
         assert!(rendered.contains("Root: /tmp/work"));
         assert!(rendered.contains("Nothing was deleted. Use `clean --apply`"));
+    }
+
+    #[test]
+    fn parses_docker_sizes() {
+        assert_eq!(parse_docker_size("0B"), Some(0));
+        assert_eq!(parse_docker_size("234kB (0%)"), Some(234_000));
+        assert_eq!(parse_docker_size("1.534GB"), Some(1_534_000_000));
+        assert_eq!(parse_docker_size("680.6MB"), Some(680_600_000));
+        assert_eq!(parse_docker_size("12XB"), None);
+        assert_eq!(parse_docker_size(""), None);
     }
 }
