@@ -59,6 +59,20 @@ const TOOL_CACHES: &[ToolCache] = &[
         clean_args: &["cache", "clean", "--force"],
         subdir: Some("_cacache"),
     },
+    ToolCache {
+        kind: CleanupKind::GoBuildCache,
+        program: "go",
+        locate_args: &["env", "GOCACHE"],
+        clean_args: &["clean", "-cache"],
+        subdir: None,
+    },
+    ToolCache {
+        kind: CleanupKind::GoModCache,
+        program: "go",
+        locate_args: &["env", "GOMODCACHE"],
+        clean_args: &["clean", "-modcache"],
+        subdir: None,
+    },
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -72,6 +86,8 @@ pub enum CleanupKind {
     UvCache,
     YarnCache,
     NpmCache,
+    GoBuildCache,
+    GoModCache,
     TempFile,
     OldFile,
 }
@@ -88,6 +104,8 @@ impl CleanupKind {
             Self::UvCache => "uv-cache",
             Self::YarnCache => "yarn-cache",
             Self::NpmCache => "npm-cache",
+            Self::GoBuildCache => "go-cache",
+            Self::GoModCache => "go-modcache",
             Self::TempFile => "temp-file",
             Self::OldFile => "old-file",
         }
@@ -101,6 +119,8 @@ impl CleanupKind {
             Self::UvCache => Some("uv cache"),
             Self::YarnCache => Some("yarn cache"),
             Self::NpmCache => Some("npm cache"),
+            Self::GoBuildCache => Some("Go build cache"),
+            Self::GoModCache => Some("Go module cache"),
             Self::NodeModules
             | Self::Dist
             | Self::NextJs
@@ -242,6 +262,8 @@ fn scan_global_caches(config: &Config, report: &mut ScanReport, spinner: &Spinne
             GlobalCache::Uv => tool_cache_candidate(CleanupKind::UvCache, report),
             GlobalCache::Yarn => tool_cache_candidate(CleanupKind::YarnCache, report),
             GlobalCache::Npm => tool_cache_candidate(CleanupKind::NpmCache, report),
+            GlobalCache::GoBuild => tool_cache_candidate(CleanupKind::GoBuildCache, report),
+            GlobalCache::GoModules => tool_cache_candidate(CleanupKind::GoModCache, report),
         };
 
         match result {
@@ -260,6 +282,8 @@ fn global_cache_name(cache: GlobalCache) -> &'static str {
         GlobalCache::Uv => "uv cache",
         GlobalCache::Yarn => "yarn cache",
         GlobalCache::Npm => "npm cache",
+        GlobalCache::GoBuild => "Go build cache",
+        GlobalCache::GoModules => "Go module cache",
     }
 }
 
@@ -519,7 +543,9 @@ fn remove_candidate(candidate: &CleanupCandidate) -> io::Result<u64> {
         CleanupKind::PnpmStore
         | CleanupKind::UvCache
         | CleanupKind::YarnCache
-        | CleanupKind::NpmCache => clean_tool_cache(candidate),
+        | CleanupKind::NpmCache
+        | CleanupKind::GoBuildCache
+        | CleanupKind::GoModCache => clean_tool_cache(candidate),
         CleanupKind::TempFile | CleanupKind::OldFile => {
             fs::remove_file(&candidate.path)?;
             Ok(candidate.size_bytes)

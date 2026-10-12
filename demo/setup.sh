@@ -37,6 +37,8 @@ mkfile "$KIKA_DEMO/caches/uv/wheels/torch.whl" 7300M
 mkfile "$KIKA_DEMO/caches/yarn/v6/npm-lodash.tgz" 2100M
 mkfile "$KIKA_DEMO/caches/npm/_cacache/content-v2/sha512/blob" 940M
 mkfile "$KIKA_DEMO/caches/pnpm/v10/files/00/blob" 1650M
+mkfile "$KIKA_DEMO/caches/go-build/a1/obj" 1200M
+mkfile "$KIKA_DEMO/caches/go-mod/cache/download/golang.org/x/net.zip" 410M
 
 mkdir -p "$KIKA_DEMO/bin"
 fake() {
@@ -47,6 +49,7 @@ fake uv     "[ \"\$1\" = cache ] && [ \"\$2\" = dir ] && echo $KIKA_DEMO/caches/
 fake yarn   "[ \"\$1\" = cache ] && [ \"\$2\" = dir ] && echo $KIKA_DEMO/caches/yarn; exit 0"
 fake npm    "[ \"\$1\" = config ] && echo $KIKA_DEMO/caches/npm; exit 0"
 fake pnpm   "[ \"\$1\" = store ] && [ \"\$2\" = path ] && echo $KIKA_DEMO/caches/pnpm; exit 0"
+fake go     "[ \"\$1\" = env ] && [ \"\$2\" = GOCACHE ] && echo $KIKA_DEMO/caches/go-build; [ \"\$1\" = env ] && [ \"\$2\" = GOMODCACHE ] && echo $KIKA_DEMO/caches/go-mod; exit 0"
 fake docker "[ \"\$1\" = system ] && printf 'Images\t0B (0%%)\nBuild Cache\t3.1GB (100%%)\n'; [ \"\$1\" = builder ] && printf 'Total:\t3.1GB\n'; exit 0"
 
 export PATH="$KIKA_DEMO/bin:$PATH"

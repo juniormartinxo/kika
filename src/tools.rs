@@ -32,8 +32,7 @@ impl Tool {
 
         if NODE_TOOLS.contains(&name) {
             for bin_dir in node_manager_bin_dirs() {
-                let program = bin_dir.join(name);
-                if program.is_file() {
+                if let Some(program) = find_in_dir(name, &bin_dir) {
                     return Ok(Self {
                         name,
                         program,
@@ -41,6 +40,16 @@ impl Tool {
                     });
                 }
             }
+        }
+
+        if name == "go"
+            && let Some(program) = go_bin_dirs().iter().find_map(|dir| find_in_dir(name, dir))
+        {
+            return Ok(Self {
+                name,
+                program,
+                path_prefix: None,
+            });
         }
 
         Err(io::Error::new(
@@ -87,15 +96,61 @@ impl Tool {
 }
 
 fn find_in_dirs(name: &str, path: &OsString) -> Option<PathBuf> {
-    env::split_paths(path).find_map(|dir| {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
+    env::split_paths(path).find_map(|dir| find_in_dir(name, &dir))
+}
 
-        let candidate = candidate.with_extension("exe");
-        candidate.is_file().then_some(candidate)
-    })
+/// The executable `name` in `dir`. On Windows npm, pnpm and yarn are `.cmd`
+/// shims, so the usual executable extensions are tried as well.
+fn find_in_dir(name: &str, dir: &Path) -> Option<PathBuf> {
+    let candidate = dir.join(name);
+    if candidate.is_file() {
+        return Some(candidate);
+    }
+
+    if !cfg!(windows) {
+        return None;
+    }
+
+    ["exe", "cmd", "bat"]
+        .into_iter()
+        .map(|extension| candidate.with_extension(extension))
+        .find(|candidate| candidate.is_file())
+}
+
+/// Where Go is usually installed when its `bin` is only added to `PATH` by a
+/// login shell profile.
+fn go_bin_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = env::var_os("GOROOT")
+        .map(|root| PathBuf::from(root).join("bin"))
+        .into_iter()
+        .collect();
+
+    if cfg!(windows) {
+        dirs.extend(
+            env::var_os("ProgramFiles")
+                .map(|programs| PathBuf::from(programs).join("Go").join("bin")),
+        );
+    } else {
+        dirs.push(PathBuf::from("/usr/local/go/bin"));
+    }
+
+    dirs
+}
+
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
+
+/// Directory holding `node` inside a Node.js installation: `bin/` on Unix, the
+/// installation root itself on Windows.
+fn node_bin(installation: PathBuf) -> PathBuf {
+    if cfg!(windows) {
+        installation
+    } else {
+        installation.join("bin")
+    }
 }
 
 fn prepend_path(prefix: &Path) -> io::Result<OsString> {
@@ -104,18 +159,19 @@ fn prepend_path(prefix: &Path) -> io::Result<OsString> {
     env::join_paths(dirs).map_err(io::Error::other)
 }
 
-/// Node.js `bin` directories from fnm and nvm, most preferred first: each
-/// manager's default alias, then its installed versions from newest to oldest.
+/// Node.js `bin` directories from fnm and nvm (or nvm-windows), most preferred
+/// first: each manager's default/active version, then its installed versions
+/// from newest to oldest.
 fn node_manager_bin_dirs() -> Vec<PathBuf> {
-    let home = env::var_os("HOME").map(PathBuf::from);
+    let home = home_dir();
     let mut dirs = Vec::new();
 
     for fnm_dir in fnm_dirs(home.as_deref()) {
-        dirs.push(fnm_dir.join("aliases").join("default").join("bin"));
+        dirs.push(node_bin(fnm_dir.join("aliases").join("default")));
         dirs.extend(
             sorted_versions(&fnm_dir.join("node-versions"))
                 .into_iter()
-                .map(|version| version.join("installation").join("bin")),
+                .map(|version| node_bin(version.join("installation"))),
         );
     }
 
@@ -130,7 +186,13 @@ fn node_manager_bin_dirs() -> Vec<PathBuf> {
         dirs.extend(versions.into_iter().map(|version| version.join("bin")));
     }
 
-    dirs.retain(|dir| dir.join("node").is_file());
+    // nvm-windows: NVM_SYMLINK points at the active version, NVM_HOME holds them all.
+    dirs.extend(env::var_os("NVM_SYMLINK").map(PathBuf::from));
+    if let Some(nvm_home) = env::var_os("NVM_HOME") {
+        dirs.extend(sorted_versions(Path::new(&nvm_home)));
+    }
+
+    dirs.retain(|dir| find_in_dir("node", dir).is_some());
     dirs.dedup();
     dirs
 }
@@ -143,6 +205,10 @@ fn fnm_dirs(home: Option<&Path>) -> Vec<PathBuf> {
 
     if let Some(data_home) = env::var_os("XDG_DATA_HOME") {
         dirs.push(PathBuf::from(data_home).join("fnm"));
+    }
+
+    if let Some(app_data) = env::var_os("APPDATA") {
+        dirs.push(PathBuf::from(app_data).join("fnm"));
     }
 
     if let Some(home) = home {

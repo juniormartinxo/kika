@@ -44,16 +44,13 @@ struct Style {
 
 impl Spinner {
     pub fn start(status: &str) -> Self {
-        if !io::stderr().is_terminal() {
+        if !io::stderr().is_terminal() || !supports_ansi() {
             return Self { active: None };
         }
 
         let style = Style {
             color: env::var_os("NO_COLOR").is_none_or(|value| value.is_empty()),
-            width: env::var("COLUMNS")
-                .ok()
-                .and_then(|value| value.parse().ok())
-                .unwrap_or(DEFAULT_WIDTH),
+            width: terminal_width(),
         };
         let line = Arc::new(Mutex::new(Line {
             status: status.to_string(),
@@ -134,6 +131,27 @@ impl Active {
         let _ = write!(stderr, "{CLEAR_LINE}");
         let _ = stderr.flush();
     }
+}
+
+/// The spinner redraws itself with ANSI escapes. Windows consoles only honor
+/// them once virtual terminal processing is enabled, which this call attempts.
+#[cfg(windows)]
+fn supports_ansi() -> bool {
+    ratatui::crossterm::ansi_support::supports_ansi()
+}
+
+#[cfg(not(windows))]
+fn supports_ansi() -> bool {
+    true
+}
+
+fn terminal_width() -> usize {
+    ratatui::crossterm::terminal::size()
+        .ok()
+        .map(|(columns, _)| usize::from(columns))
+        .filter(|columns| *columns > 0)
+        .or_else(|| env::var("COLUMNS").ok()?.parse().ok())
+        .unwrap_or(DEFAULT_WIDTH)
 }
 
 fn animate(line: &Mutex<Line>, stop: &AtomicBool, style: Style) {

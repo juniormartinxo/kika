@@ -5,11 +5,12 @@
 **Recupere gigabytes de disco sem medo de apagar o que não devia.**
 
 O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e arquivos temporários,<br>
-soma o que os caches do Docker, pnpm, uv, yarn e npm estão ocupando e deixa você escolher o que limpar.
+soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.4.0-blue)
-![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20WSL-lightgrey)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.5.0-blue)
+[![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
+![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 
 <img src="assets/demo.gif" alt="kika listando projetos e caches, marcando dois repositórios e limpando só eles" width="860">
 
@@ -21,9 +22,10 @@ soma o que os caches do Docker, pnpm, uv, yarn e npm estão ocupando e deixa voc
 
 - 🔍 **Relatório primeiro, sempre.** Rodar `kika` nunca apaga nada: ele mostra o que encontrou e quanto espaço dá para liberar
 - 🗂️ **Lista interativa.** Os achados são agrupados por repositório git; marque os que quiser e limpe só eles, ou tudo de uma vez
-- 🌍 **Caches globais inclusos.** Docker build cache, pnpm store, uv, yarn e npm entram no mesmo relatório
+- 🌍 **Caches globais inclusos.** Docker build cache, pnpm store, uv, yarn, npm e os caches do Go entram no mesmo relatório
 - 🦀 **Rust do jeito certo.** `target/` só é tratado ao lado de um `Cargo.toml` e é limpo com `cargo clean --offline`
-- 🟢 **Entende fnm e nvm.** Encontra `npm`, `pnpm` e `yarn` mesmo fora de um shell inicializado (cron, scripts)
+- 🟢 **Entende fnm e nvm.** Encontra `npm`, `pnpm` e `yarn` mesmo fora de um shell inicializado (cron, scripts), inclusive com nvm-windows
+- 🪟 **Multiplataforma.** Linux, macOS, Windows e WSL, com CI rodando nos três sistemas
 - ⚡ **Cara de CLI moderna.** Spinner com progresso no stderr, saída limpa em pipes e respeito ao `NO_COLOR`
 
 ## 📦 Instalação
@@ -69,7 +71,7 @@ Rode `kika --help` para a lista completa de opções.
 No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 
 ```
-┌ kika · 10 groups · 17.9 GB reclaimable ──────────────────────────────────┐
+┌ kika · 12 groups · 19.5 GB reclaimable ──────────────────────────────────┐
 │      Name                      Items      Size Contents                  │
 │› [x] storefront                    3    1.1 GB node_modules, .next       │
 │  [ ] design-system                 3  467.0 MB node_modules, dist, temp… │
@@ -78,7 +80,7 @@ No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 │  [ ] uv cache                      1    7.1 GB uv-cache                  │
 │  [ ] Docker build cache            1    2.9 GB docker-cache              │
 └──────────────────────────────────────────────────────────────────────────┘
- Clean selected · 2 · 1.1 GB    Clean all · 17.9 GB
+ Clean selected · 2 · 1.1 GB    Clean all · 19.5 GB
 ```
 
 | Tecla                   | Ação                                       |
@@ -121,6 +123,8 @@ No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 | `--uv-cache`       | Cache do uv                         | `uv cache clean`               |
 | `--yarn-cache`     | Cache do yarn                       | `yarn cache clean`             |
 | `--npm-cache`      | Cache do npm                        | `npm cache clean --force`      |
+| `--go-cache`       | Build cache do Go (`GOCACHE`)       | `go clean -cache`              |
+| `--go-modcache`    | Módulos baixados (`GOMODCACHE`)     | `go clean -modcache`           |
 
 Sem flags de cache, todos entram. Com uma ou mais flags, só os escolhidos entram; `--no-caches` deixa os caches globais de fora.
 
@@ -131,6 +135,9 @@ Sem flags de cache, todos entram. Com uma ou mais flags, só os escolhidos entra
 - No `clean`, o espaço informado é o realmente liberado, medido de novo após a limpeza ou lido da saída do Docker
 - Ferramenta ausente ou com erro gera um aviso e o cache é ignorado, sem interromper o restante
 - `npm`, `pnpm` e `yarn` são procurados primeiro no `PATH`. Se não estiverem lá, o kika usa o Node do fnm (`$FNM_DIR`, `~/.local/share/fnm`, `~/.fnm`) ou do nvm (`$NVM_DIR`, `~/.nvm`), preferindo o alias `default` e depois a versão mais recente instalada. O `bin` dessa versão vai para o `PATH` do processo filho, para que o `node` seja encontrado
+- No Windows, os shims `.cmd` de `npm`, `pnpm` e `yarn` são reconhecidos, e o Node também é procurado no fnm (`%APPDATA%\fnm`) e no nvm-windows (`%NVM_SYMLINK%`, `%NVM_HOME%`)
+- O `go` é procurado no `PATH` e, se não estiver lá, em `$GOROOT/bin`, `/usr/local/go/bin` ou `%ProgramFiles%\Go\bin`
+- Limpar o cache de módulos do Go só obriga o próximo build a baixar as dependências de novo. Ele é apagado com `go clean -modcache` porque o Go grava os módulos como somente leitura
 
 </details>
 

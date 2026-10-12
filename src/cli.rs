@@ -17,15 +17,19 @@ pub enum GlobalCache {
     Uv,
     Yarn,
     Npm,
+    GoBuild,
+    GoModules,
 }
 
 impl GlobalCache {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 7] = [
         Self::DockerBuilder,
         Self::PnpmStore,
         Self::Uv,
         Self::Yarn,
         Self::Npm,
+        Self::GoBuild,
+        Self::GoModules,
     ];
 
     fn from_flag(flag: &str) -> Option<Self> {
@@ -35,6 +39,8 @@ impl GlobalCache {
             "--uv-cache" => Some(Self::Uv),
             "--yarn-cache" => Some(Self::Yarn),
             "--npm-cache" => Some(Self::Npm),
+            "--go-cache" => Some(Self::GoBuild),
+            "--go-modcache" => Some(Self::GoModules),
             _ => None,
         }
     }
@@ -246,6 +252,8 @@ Global caches (outside the scanned path, all included by default):
   - uv cache, cleaned via `uv cache clean`
   - yarn cache, cleaned via `yarn cache clean`
   - npm cache, cleaned via `npm cache clean --force`
+  - Go build cache, cleaned via `go clean -cache`
+  - Go module cache, cleaned via `go clean -modcache`
 
 Without --yes, the clean command asks for confirmation before removing anything.
 
@@ -263,6 +271,8 @@ Cache flags (pick a subset; without them every cache is included):
   --uv-cache              uv cache
   --yarn-cache            yarn cache
   --npm-cache             npm cache
+  --go-cache              Go build cache
+  --go-modcache           Go module cache (modules are downloaded again)
   --all-caches            Every cache above (the default)
   --no-caches             Skip global caches, only scan the path
 
@@ -347,12 +357,17 @@ mod tests {
             "clean",
             "--docker-builder",
             "--npm-cache",
+            "--go-modcache",
             "--npm-cache",
         ])
         .unwrap();
         assert_eq!(
             config.global_caches.into_iter().collect::<Vec<_>>(),
-            vec![GlobalCache::DockerBuilder, GlobalCache::Npm]
+            vec![
+                GlobalCache::DockerBuilder,
+                GlobalCache::Npm,
+                GlobalCache::GoModules
+            ]
         );
     }
 
