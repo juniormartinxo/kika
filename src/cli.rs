@@ -78,6 +78,7 @@ impl Config {
                     args.remove(0);
                 }
                 "-h" | "--help" => return Err(help_message(None)),
+                "-v" | "-V" | "--version" => return Err(VERSION_MESSAGE.to_string()),
                 _ => {}
             }
         }
@@ -121,6 +122,7 @@ impl Config {
                     output = Some(PathBuf::from(value));
                 }
                 "-h" | "--help" => return Err(help_message(None)),
+                "-v" | "-V" | "--version" => return Err(VERSION_MESSAGE.to_string()),
                 flag if flag.starts_with('-') => {
                     let cache = GlobalCache::from_flag(flag)
                         .ok_or_else(|| format!("unknown flag: {flag}"))?;
@@ -215,6 +217,10 @@ pub fn parse_or_exit() -> Config {
             println!("{}", help_message(Some(&bin)));
             std::process::exit(0);
         }
+        Err(message) if message == VERSION_MESSAGE => {
+            println!("{message}");
+            std::process::exit(0);
+        }
         Err(message) => {
             eprintln!("{message}");
             eprintln!();
@@ -223,6 +229,8 @@ pub fn parse_or_exit() -> Config {
         }
     }
 }
+
+const VERSION_MESSAGE: &str = concat!("kika ", env!("CARGO_PKG_VERSION"));
 
 fn looks_like_help(message: &str) -> bool {
     message.starts_with("Usage:")
@@ -272,6 +280,7 @@ Options:
   --include-old-files     Also match regular files older than the cutoff
   --older-than-days <n>   Age threshold for old file cleanup
   -h, --help              Show this help message
+  -v, --version           Show the version
 
 Cache flags (pick a subset; without them every cache is included):
   --docker-builder        Docker build cache
@@ -386,6 +395,20 @@ mod tests {
 
         let error = Config::parse_from(vec!["--no-caches", "--uv-cache"]).unwrap_err();
         assert!(error.contains("cannot be combined"));
+    }
+
+    #[test]
+    fn asks_for_the_version() {
+        for flag in ["-v", "-V", "--version"] {
+            assert_eq!(
+                Config::parse_from(vec![flag]).unwrap_err(),
+                concat!("kika ", env!("CARGO_PKG_VERSION"))
+            );
+        }
+        assert_eq!(
+            Config::parse_from(vec!["clean", "-v"]).unwrap_err(),
+            super::VERSION_MESSAGE
+        );
     }
 
     #[test]

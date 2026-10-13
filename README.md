@@ -8,7 +8,7 @@ O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e
 soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.1-blue)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.7.0-blue)
 [![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
 ![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 
@@ -65,7 +65,7 @@ kika clean --yes     # remove sem perguntar (ideal para automação)
 | `kika clean --docker-builder --pnpm-store`               | Limpa o diretório e apenas os caches escolhidos                |
 | `kika report [path] --include-old-files --older-than-days 90` | Inclui arquivos com mais de 90 dias (com `clean`, são removidos) |
 
-Rode `kika --help` para a lista completa de opções.
+Rode `kika --help` para a lista completa de opções e `kika -v` para ver a versão instalada.
 
 ## 🖥️ Lista interativa
 
