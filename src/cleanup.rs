@@ -982,6 +982,7 @@ mod tests {
             "app/src",
             "vite-only/dist",
             "global/lib/node_modules/typescript/dist",
+            "tools/fnm/node-versions/v24.21.0/installation/node_modules/corepack/dist",
             "AppData/Local/Programs/cursor/resources/app/node_modules",
             "appdata/local/tool/node_modules",
             "Programs/cursor/resources/app/node_modules",
