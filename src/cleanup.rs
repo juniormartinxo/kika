@@ -10,7 +10,8 @@ use crate::progress::{Spinner, group_digits};
 use crate::tools::{Tool, home_dir};
 
 /// Build outputs of JavaScript projects. They only count next to a
-/// `package.json`, so folders that merely share the name are left alone.
+/// `package.json` of a project under development (see `is_js_project`), so
+/// folders that merely share the name are left alone.
 const PROJECT_DIRS: &[(&str, CleanupKind)] =
     &[("dist", CleanupKind::Dist), (".next", CleanupKind::NextJs)];
 
@@ -28,7 +29,23 @@ const SKIPPED_DIRS: &[&str] = &[
     "ProgramData",
     "Windows",
     "$Recycle.Bin",
+    "Applications",
 ];
+
+/// Lockfiles only exist where someone ran the package manager. Installed
+/// programs ship a `package.json` beside their `node_modules`, but no lockfile.
+const JS_LOCKFILES: &[&str] = &[
+    "package-lock.json",
+    "npm-shrinkwrap.json",
+    "yarn.lock",
+    "pnpm-lock.yaml",
+    "bun.lock",
+    "bun.lockb",
+];
+
+/// Archives of a packaged Electron app (Dusky, Cursor, VS Code...). A directory
+/// holding one is an installed program: nothing in it is a project leftover.
+const ELECTRON_ARCHIVES: &[&str] = &["app.asar", "node_modules.asar"];
 
 /// Junk anywhere: these files never hold anything worth keeping.
 const JUNK_FILE_NAMES: &[&str] = &[".DS_Store", "Thumbs.db"];
@@ -436,6 +453,10 @@ impl<'a> Scanner<'a> {
     }
 
     fn scan_dir(&mut self, dir: &Path, in_repo: bool) {
+        if is_installed_app(dir) {
+            return;
+        }
+
         let in_repo = in_repo || is_repository(dir, self.home.as_deref());
         let entries = match fs::read_dir(dir) {
             Ok(entries) => entries,
@@ -495,12 +516,13 @@ impl<'a> Scanner<'a> {
                 }
 
                 match project_dir_kind(name.as_ref()) {
-                    Some(kind) if dir.join("package.json").is_file() => {
+                    Some(kind) if self.is_js_project(dir, in_repo) => {
                         self.push_dir_candidate(path, kind);
                         continue;
                     }
-                    // Without a `package.json` beside it, a `node_modules` holds
-                    // global installs or vendored packages: never look inside.
+                    // Outside a project under development, a `node_modules` holds
+                    // global installs, vendored packages or a program's runtime
+                    // dependencies: never look inside.
                     Some(CleanupKind::NodeModules) => continue,
                     _ => {}
                 }
@@ -545,6 +567,22 @@ impl<'a> Scanner<'a> {
                 });
             }
         }
+    }
+
+    /// A `package.json` alone is not enough: installed programs ship one too.
+    /// The project must also be in a git repository or have a lockfile in its
+    /// directory or in a workspace root above it (the home directory excluded,
+    /// where a stray `package-lock.json` would vouch for everything).
+    fn is_js_project(&self, dir: &Path, in_repo: bool) -> bool {
+        if !dir.join("package.json").is_file() {
+            return false;
+        }
+
+        in_repo
+            || dir
+                .ancestors()
+                .take_while(|ancestor| self.home.as_deref() != Some(*ancestor))
+                .any(has_js_lockfile)
     }
 
     fn push_dir_candidate(&mut self, path: PathBuf, kind: CleanupKind) {
@@ -758,8 +796,24 @@ fn project_dir_kind(name: &str) -> Option<CleanupKind> {
         .find_map(|(dir_name, kind)| (*dir_name == name).then_some(*kind))
 }
 
+/// Windows matches names regardless of case, so `appdata` is still `AppData`.
 fn is_skipped_dir(name: &str) -> bool {
-    name.starts_with('.') || SKIPPED_DIRS.contains(&name)
+    name.starts_with('.')
+        || SKIPPED_DIRS
+            .iter()
+            .any(|skipped| skipped.eq_ignore_ascii_case(name))
+}
+
+fn is_installed_app(dir: &Path) -> bool {
+    ELECTRON_ARCHIVES
+        .iter()
+        .any(|archive| dir.join(archive).exists())
+}
+
+fn has_js_lockfile(dir: &Path) -> bool {
+    JS_LOCKFILES
+        .iter()
+        .any(|lockfile| dir.join(lockfile).is_file())
 }
 
 fn is_junk_file(name: &str) -> bool {
@@ -929,8 +983,14 @@ mod tests {
             "vite-only/dist",
             "global/lib/node_modules/typescript/dist",
             "AppData/Local/Programs/cursor/resources/app/node_modules",
+            "appdata/local/tool/node_modules",
+            "Programs/cursor/resources/app/node_modules",
+            "Programs/dusky/resources/node_modules/@linear",
             ".vscode/extensions/eslint/node_modules",
             "Documents/IRPF",
+            "solo/node_modules",
+            "mono/packages/ui/node_modules",
+            "mono/packages/ui/dist",
         ];
         for dir in dirs {
             fs::create_dir_all(root.join(dir)).unwrap();
@@ -940,7 +1000,17 @@ mod tests {
             "app/src/notes.bak",
             "app/node_modules_old/@firebase/auth/package.json",
             "AppData/Local/Programs/cursor/resources/app/package.json",
+            "appdata/local/tool/package.json",
+            "appdata/local/tool/package-lock.json",
+            "Programs/cursor/resources/app/package.json",
+            "Programs/dusky/resources/app.asar",
+            "Programs/dusky/resources/package.json",
+            "Programs/dusky/resources/package-lock.json",
             ".vscode/extensions/eslint/package.json",
+            "solo/package.json",
+            "solo/package-lock.json",
+            "mono/pnpm-lock.yaml",
+            "mono/packages/ui/package.json",
             "Documents/IRPF/2014.BAK",
             "Documents/Thumbs.db",
         ];
@@ -970,6 +1040,12 @@ mod tests {
                     CleanupKind::NodeModules
                 ),
                 (PathBuf::from("app/src/notes.bak"), CleanupKind::TempFile),
+                (PathBuf::from("mono/packages/ui/dist"), CleanupKind::Dist),
+                (
+                    PathBuf::from("mono/packages/ui/node_modules"),
+                    CleanupKind::NodeModules
+                ),
+                (PathBuf::from("solo/node_modules"), CleanupKind::NodeModules),
             ]
         );
 

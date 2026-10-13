@@ -8,7 +8,7 @@ O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e
 soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.0-blue)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.6.1-blue)
 [![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
 ![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 
@@ -108,8 +108,8 @@ No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 
 | Alvo                                 | Quando conta                                                                  |
 | ------------------------------------ | ----------------------------------------------------------------------------- |
-| `node_modules`                       | Com `package.json` ao lado. Cópias renomeadas (`node_modules_old`, `node_modules.bak`) entram inteiras |
-| `dist`, `.next`                      | Com `package.json` ao lado                                                    |
+| `node_modules`                       | Com `package.json` ao lado, num repositório git ou com lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`) na pasta ou na raiz do workspace. Cópias renomeadas (`node_modules_old`, `node_modules.bak`) entram inteiras |
+| `dist`, `.next`                      | Mesma regra do `node_modules`                                                 |
 | `target`                             | Com `Cargo.toml` ao lado, limpo via `cargo clean --offline`                   |
 | `.tmp`, `.temp`, `.bak`, `.old`, `.orig`, `.rej`, `.swp`, `.swo` | Só dentro de um repositório git                   |
 | `.DS_Store`, `Thumbs.db`, `Zone.Identifier` | Em qualquer lugar                                                      |
@@ -149,14 +149,16 @@ O kika foi feito para rodar até no `$HOME` inteiro sem tocar no que não é lix
 **Onde ele nunca entra**
 
 - Pastas ocultas (`.vscode`, `.vscode-server`, `.cursor`, `.cache`, `.config`, `.local`, `.cargo`, `.git`...), onde ficam extensões de editor, binários de ferramentas e configurações
-- `AppData`, `Library`, `Program Files`, `Program Files (x86)`, `ProgramData`, `Windows` e `$Recycle.Bin`, onde ficam programas instalados e arquivos do sistema
+- `AppData`, `Library`, `Applications`, `Program Files`, `Program Files (x86)`, `ProgramData`, `Windows` e `$Recycle.Bin` (sem diferenciar maiúsculas), onde ficam programas instalados e arquivos do sistema
+- Pastas com `app.asar` ou `node_modules.asar`, que são apps Electron instalados (VS Code, Cursor, Dusky...), onde quer que estejam
 - `node_modules` sem `package.json` ao lado, como instalações globais do npm
 - Links simbólicos
-- O diretório escaneado em si nunca é filtrado: `kika ~/.config/meu-projeto` funciona normalmente
+- O diretório escaneado em si nunca é filtrado pelo nome: `kika ~/.config/meu-projeto` funciona normalmente
 
 **O que ele não considera lixo**
 
 - `dist` e `node_modules` sem um `package.json` ao lado, nem os que estão dentro de outro `node_modules`
+- `dist` e `node_modules` de um `package.json` sem repositório git e sem lockfile: é assim que programas instalados empacotam suas dependências. Um lockfile no próprio home não conta
 - `.bak`, `.old` e afins fora de um repositório git, porque ali costumam ser o backup de alguém (IRPF, AutoCAD, SketchUp). Um `.git` no próprio home (repositório de dotfiles) não conta
 - `target/` sem `Cargo.toml` ao lado
 

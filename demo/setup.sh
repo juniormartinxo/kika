@@ -32,8 +32,9 @@ mkfile "$KIKA_DEMO/projects/landing-page/dist/assets/hero.webp" 37M
 mkfile "$KIKA_DEMO/projects/landing-page/notes.tmp" 4K
 
 mkfile "$KIKA_DEMO/projects/sketches/node_modules/three/build/three.module.js" 64M
+mkfile "$KIKA_DEMO/projects/sketches/package-lock.json" 1K
 
-# Build outputs only count next to a package.json.
+# Build outputs only count next to a package.json, in a git repo or beside a lockfile.
 for project in storefront storefront/apps/admin design-system landing-page sketches; do
     echo '{}' > "$KIKA_DEMO/projects/$project/package.json"
 done

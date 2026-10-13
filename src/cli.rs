@@ -243,14 +243,16 @@ Commands:
 
 Scans a directory tree looking for:
   - node_modules directories (and renamed copies like node_modules_old),
-    dist and .next directories, all next to a package.json
+    dist and .next directories, all next to a package.json, inside a git
+    repository or beside a lockfile (package-lock.json, pnpm-lock.yaml...)
   - target directories of Rust projects (cleaned via `cargo clean --offline`)
   - temporary files (.tmp, .temp, .bak, .old, .orig, .rej, .swp, .swo),
     only inside git repositories
   - .DS_Store, Thumbs.db and Zone.Identifier files, anywhere
 
 Never looks inside hidden directories (.vscode, .cache, .git...), AppData,
-Library, Program Files, ProgramData or Windows.
+Library, Applications, Program Files, ProgramData, Windows or installed
+Electron apps (folders with app.asar or node_modules.asar).
 
 Global caches (outside the scanned path, all included by default):
   - Docker build cache, cleaned via `docker builder prune --force`
