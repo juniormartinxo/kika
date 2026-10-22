@@ -8,7 +8,7 @@ O kika varre seus projetos atrás de `node_modules`, builds, `target/` do Rust e
 soma o que os caches do Docker, pnpm, uv, yarn, npm e Go estão ocupando e deixa você escolher o que limpar.
 
 ![Rust](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Versão](https://img.shields.io/badge/vers%C3%A3o-0.7.0-blue)
+![Versão](https://img.shields.io/badge/vers%C3%A3o-0.8.0-blue)
 [![CI](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml/badge.svg)](https://github.com/juniormartinxo/kika/actions/workflows/ci.yml)
 ![Plataforma](https://img.shields.io/badge/plataforma-Linux%20%C2%B7%20macOS%20%C2%B7%20Windows%20%C2%B7%20WSL-lightgrey)
 
@@ -120,7 +120,7 @@ No terminal, `kika` abre uma lista com tudo o que foi encontrado:
 | Flag               | Cache                               | Comando executado no `clean`   |
 | ------------------ | ----------------------------------- | ------------------------------ |
 | `--docker-builder` | Build cache do Docker               | `docker builder prune --force` |
-| `--pnpm-store`     | Pacotes não referenciados do pnpm   | `pnpm store prune`             |
+| `--pnpm-store`     | Pacotes não referenciados do pnpm e stores de versões antigas (`v3`, `v10`...) | `pnpm store prune`; as stores antigas são apagadas |
 | `--uv-cache`       | Cache do uv                         | `uv cache clean`               |
 | `--yarn-cache`     | Cache do yarn                       | `yarn cache clean`             |
 | `--npm-cache`      | Cache do npm                        | `npm cache clean --force`      |
@@ -132,7 +132,9 @@ Sem flags de cache, todos entram. Com uma ou mais flags, só os escolhidos entra
 <details>
 <summary><b>Como os caches são medidos e encontrados</b></summary>
 
-- O tamanho no relatório é uma estimativa: para o Docker vem do `Reclaimable` de `docker system df`; para os demais, é o tamanho do diretório de cache (no pnpm é um teto, já que `pnpm store prune` mantém pacotes ainda referenciados)
+- O tamanho no relatório é o espaço que volta ao disco. Um arquivo com vários hardlinks só conta quando todos os links estão dentro do que será apagado: os `node_modules` do pnpm e os ambientes do uv são hardlinks para a store e o cache, e apagar uma das cópias não libera nada. No Windows, onde a contagem de links não está disponível, vale o tamanho dos arquivos
+- Para o Docker, o tamanho vem do `Reclaimable` de `docker system df`. Com o Docker Desktop (WSL, Windows, macOS), esse espaço fica no disco virtual dele, não no disco escaneado: aparece à parte, em "Also reclaimable on other disks", fora do total
+- No pnpm, o valor ainda é um teto: o `pnpm store prune` também mantém pacotes de projetos que ele tem registrados. As stores de versões antigas do pnpm (`v3`, `v10` ao lado da `v11` atual) não são usadas nem limpas pelo pnpm atual, então o kika as lista e apaga; arquivos ainda ligados a uma instalação antiga sobrevivem, e esses projetos continuam funcionando
 - No `clean`, o espaço informado é o realmente liberado, medido de novo após a limpeza ou lido da saída do Docker
 - Ferramenta ausente ou com erro gera um aviso e o cache é ignorado, sem interromper o restante
 - `npm`, `pnpm` e `yarn` são procurados primeiro no `PATH`. Se não estiverem lá, o kika usa o Node do fnm (`$FNM_DIR`, `~/.local/share/fnm`, `~/.fnm`) ou do nvm (`$NVM_DIR`, `~/.nvm`), preferindo o alias `default` e depois a versão mais recente instalada. O `bin` dessa versão vai para o `PATH` do processo filho, para que o `node` seja encontrado

@@ -28,6 +28,14 @@ impl Group {
             .sum()
     }
 
+    /// Bytes given back to the scanned disk (see `CleanupCandidate::elsewhere`).
+    pub fn local_bytes(&self) -> u64 {
+        self.candidates
+            .iter()
+            .map(CleanupCandidate::local_bytes)
+            .sum()
+    }
+
     /// Distinct kinds in this group, in a stable order.
     pub fn kinds(&self) -> Vec<CleanupKind> {
         let mut kinds: Vec<CleanupKind> = self
@@ -41,6 +49,21 @@ impl Group {
     }
 }
 
+/// A global cache's name, with the store version of an old pnpm store and the disk the space
+/// goes back to when it is not the scanned one.
+fn cache_label(name: &str, candidate: &CleanupCandidate) -> String {
+    let mut label = name.to_string();
+    if candidate.kind == CleanupKind::PnpmOldStore
+        && let Some(version) = candidate.path.file_name()
+    {
+        label.push_str(&format!(" {}", version.to_string_lossy()));
+    }
+    if let Some(disk) = candidate.elsewhere {
+        label.push_str(&format!(" (on {disk})"));
+    }
+    label
+}
+
 /// Groups candidates by git repository (or project directory when outside a
 /// repository), largest first, followed by the global caches.
 pub fn group_candidates(root: &Path, candidates: Vec<CleanupCandidate>) -> Vec<Group> {
@@ -51,7 +74,7 @@ pub fn group_candidates(root: &Path, candidates: Vec<CleanupCandidate>) -> Vec<G
     for candidate in candidates {
         if let Some(name) = candidate.kind.global_cache_name() {
             caches.push(Group {
-                label: name.to_string(),
+                label: cache_label(name, &candidate),
                 kind: GroupKind::GlobalCache,
                 candidates: vec![candidate],
             });
@@ -131,11 +154,52 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn candidate(path: PathBuf, kind: CleanupKind, size_bytes: u64) -> CleanupCandidate {
-        CleanupCandidate {
-            path,
-            kind,
-            size_bytes,
-        }
+        CleanupCandidate::new(path, kind, size_bytes)
+    }
+
+    #[test]
+    fn labels_old_pnpm_stores_and_space_on_other_disks() {
+        let docker = CleanupCandidate {
+            elsewhere: Some("Docker Desktop's virtual disk"),
+            ..candidate(
+                PathBuf::from("<docker build cache>"),
+                CleanupKind::DockerBuildCache,
+                700,
+            )
+        };
+        let groups = group_candidates(
+            Path::new("/work"),
+            vec![
+                candidate(
+                    PathBuf::from("/pnpm/store/v10"),
+                    CleanupKind::PnpmOldStore,
+                    300,
+                ),
+                docker,
+            ],
+        );
+
+        let labels: Vec<(&str, u64, u64)> = groups
+            .iter()
+            .map(|group| {
+                (
+                    group.label.as_str(),
+                    group.size_bytes(),
+                    group.local_bytes(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                (
+                    "Docker build cache (on Docker Desktop's virtual disk)",
+                    700,
+                    0
+                ),
+                ("old pnpm store v10", 300, 300),
+            ]
+        );
     }
 
     #[test]

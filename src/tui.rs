@@ -286,7 +286,7 @@ impl App {
             .sum();
         let bytes = selection
             .iter()
-            .map(|index| self.groups[*index].size_bytes())
+            .map(|index| self.groups[*index].local_bytes())
             .sum();
         (selection.len(), items, bytes)
     }
@@ -508,10 +508,12 @@ mod tests {
             kind,
             candidates: sizes
                 .iter()
-                .map(|size| CleanupCandidate {
-                    path: PathBuf::from(format!("/work/{label}/node_modules")),
-                    kind: CleanupKind::NodeModules,
-                    size_bytes: *size,
+                .map(|size| {
+                    CleanupCandidate::new(
+                        PathBuf::from(format!("/work/{label}/node_modules")),
+                        CleanupKind::NodeModules,
+                        *size,
+                    )
                 })
                 .collect(),
         }

@@ -264,12 +264,17 @@ Electron apps (folders with app.asar or node_modules.asar).
 
 Global caches (outside the scanned path, all included by default):
   - Docker build cache, cleaned via `docker builder prune --force`
-  - pnpm store, cleaned via `pnpm store prune`
+    (Docker Desktop keeps it on its own virtual disk: listed apart, not in the total)
+  - pnpm store, cleaned via `pnpm store prune`; stores of older pnpm
+    versions (v3, v10...) are deleted
   - uv cache, cleaned via `uv cache clean`
   - yarn cache, cleaned via `yarn cache clean`
   - npm cache, cleaned via `npm cache clean --force`
   - Go build cache, cleaned via `go clean -cache`
   - Go module cache, cleaned via `go clean -modcache`
+
+Sizes are the space given back: a file with several hard links counts only when
+all of them are inside what is removed (pnpm's node_modules, uv's environments).
 
 Without --yes, the clean command asks for confirmation before removing anything.
 
@@ -284,7 +289,7 @@ Options:
 
 Cache flags (pick a subset; without them every cache is included):
   --docker-builder        Docker build cache
-  --pnpm-store            Unreferenced packages in the pnpm store
+  --pnpm-store            Unreferenced packages in the pnpm store, old pnpm stores
   --uv-cache              uv cache
   --yarn-cache            yarn cache
   --npm-cache             npm cache
