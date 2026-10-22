@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::fs;
 use std::io;
@@ -118,6 +118,7 @@ pub enum CleanupKind {
     CargoTarget,
     DockerBuildCache,
     PnpmStore,
+    PnpmOldStore,
     UvCache,
     YarnCache,
     NpmCache,
@@ -136,6 +137,7 @@ impl CleanupKind {
             Self::CargoTarget => "cargo-target",
             Self::DockerBuildCache => "docker-cache",
             Self::PnpmStore => "pnpm-store",
+            Self::PnpmOldStore => "pnpm-old-store",
             Self::UvCache => "uv-cache",
             Self::YarnCache => "yarn-cache",
             Self::NpmCache => "npm-cache",
@@ -151,6 +153,7 @@ impl CleanupKind {
         match self {
             Self::DockerBuildCache => Some("Docker build cache"),
             Self::PnpmStore => Some("pnpm store"),
+            Self::PnpmOldStore => Some("old pnpm store"),
             Self::UvCache => Some("uv cache"),
             Self::YarnCache => Some("yarn cache"),
             Self::NpmCache => Some("npm cache"),
@@ -177,6 +180,29 @@ pub struct CleanupCandidate {
     pub path: PathBuf,
     pub kind: CleanupKind,
     pub size_bytes: u64,
+    /// The disk the space comes back to when it is not the scanned one (Docker Desktop keeps
+    /// its data in its own virtual disk). Such space stays out of the totals.
+    pub elsewhere: Option<&'static str>,
+}
+
+impl CleanupCandidate {
+    pub fn new(path: PathBuf, kind: CleanupKind, size_bytes: u64) -> Self {
+        Self {
+            path,
+            kind,
+            size_bytes,
+            elsewhere: None,
+        }
+    }
+
+    /// Bytes this candidate gives back to the scanned disk.
+    pub fn local_bytes(&self) -> u64 {
+        if self.elsewhere.is_some() {
+            0
+        } else {
+            self.size_bytes
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -187,9 +213,19 @@ pub struct ScanReport {
 }
 
 impl ScanReport {
+    /// Space given back to the scanned disk.
     pub fn total_bytes(&self) -> u64 {
         self.candidates
             .iter()
+            .map(CleanupCandidate::local_bytes)
+            .sum()
+    }
+
+    /// Space given back to other disks, kept out of `total_bytes`.
+    fn elsewhere_bytes(&self) -> u64 {
+        self.candidates
+            .iter()
+            .filter(|candidate| candidate.elsewhere.is_some())
             .map(|candidate| candidate.size_bytes)
             .sum()
     }
@@ -337,6 +373,11 @@ fn scan_global_caches(config: &Config, report: &mut ScanReport, spinner: &Spinne
         };
 
         match result {
+            Ok(candidate) if candidate.kind == CleanupKind::PnpmStore => {
+                let old_stores = pnpm_old_store_candidates(&candidate.path, &mut report.warnings);
+                report.candidates.push(candidate);
+                report.candidates.extend(old_stores);
+            }
             Ok(candidate) => report.candidates.push(candidate),
             Err(error) => report
                 .warnings
@@ -367,6 +408,13 @@ pub fn render_report(config: &Config, report: &ScanReport) -> String {
         "Estimated reclaimable space: {}\n",
         format_bytes(report.total_bytes())
     ));
+    let elsewhere = report.elsewhere_bytes();
+    if elsewhere > 0 {
+        output.push_str(&format!(
+            "Also reclaimable on other disks (not counted above): {}\n",
+            format_bytes(elsewhere)
+        ));
+    }
 
     if let Some(days) = config.older_than_days {
         output.push_str(&format!("Old file cutoff: {days} days\n"));
@@ -385,8 +433,12 @@ pub fn render_report(config: &Config, report: &ScanReport) -> String {
         output.push_str("\nCandidates:\n");
 
         for candidate in &report.candidates {
+            let disk = candidate
+                .elsewhere
+                .map(|disk| format!(", on {disk}"))
+                .unwrap_or_default();
             output.push_str(&format!(
-                "  {} [{:<12}] {} ({})\n",
+                "  {} [{:<12}] {} ({}{disk})\n",
                 candidate_prefix(config),
                 candidate.kind,
                 candidate.path.display(),
@@ -551,20 +603,20 @@ impl<'a> Scanner<'a> {
             };
 
             if is_junk_file(name.as_ref()) || (in_repo && has_temp_extension(&path)) {
-                self.report.candidates.push(CleanupCandidate {
+                self.report.candidates.push(CleanupCandidate::new(
                     path,
-                    kind: CleanupKind::TempFile,
-                    size_bytes: metadata.len(),
-                });
+                    CleanupKind::TempFile,
+                    metadata.len(),
+                ));
                 continue;
             }
 
             if self.matches_old_file(&metadata) {
-                self.report.candidates.push(CleanupCandidate {
+                self.report.candidates.push(CleanupCandidate::new(
                     path,
-                    kind: CleanupKind::OldFile,
-                    size_bytes: metadata.len(),
-                });
+                    CleanupKind::OldFile,
+                    metadata.len(),
+                ));
             }
         }
     }
@@ -590,11 +642,9 @@ impl<'a> Scanner<'a> {
             .update(|| (format!("Measuring {kind}"), path.display().to_string()));
 
         let size_bytes = measure_dir(&path, &mut self.report.warnings);
-        self.report.candidates.push(CleanupCandidate {
-            path,
-            kind,
-            size_bytes,
-        });
+        self.report
+            .candidates
+            .push(CleanupCandidate::new(path, kind, size_bytes));
     }
 
     fn matches_old_file(&mut self, metadata: &fs::Metadata) -> bool {
@@ -631,7 +681,10 @@ fn cutoff_for_old_files(config: &Config) -> Option<SystemTime> {
 /// Removes the candidate and returns how many bytes were actually reclaimed.
 fn remove_candidate(candidate: &CleanupCandidate) -> io::Result<u64> {
     match candidate.kind {
-        CleanupKind::NodeModules | CleanupKind::Dist | CleanupKind::NextJs => {
+        CleanupKind::NodeModules
+        | CleanupKind::Dist
+        | CleanupKind::NextJs
+        | CleanupKind::PnpmOldStore => {
             fs::remove_dir_all(&candidate.path)?;
             Ok(candidate.size_bytes)
         }
@@ -687,11 +740,27 @@ fn docker_build_cache_candidate() -> io::Result<CleanupCandidate> {
     let size_bytes = parse_docker_size(reclaimable)
         .ok_or_else(|| io::Error::other(format!("could not parse Docker size: {reclaimable}")))?;
 
+    // A failed lookup reads as a native engine: the space is then counted, as before.
+    let operating_system = docker
+        .run(&["info", "--format", "{{.OperatingSystem}}"], None)
+        .unwrap_or_default();
+
     Ok(CleanupCandidate {
-        path: PathBuf::from("<docker build cache>"),
-        kind: CleanupKind::DockerBuildCache,
-        size_bytes,
+        elsewhere: docker_desktop_disk(&operating_system),
+        ..CleanupCandidate::new(
+            PathBuf::from("<docker build cache>"),
+            CleanupKind::DockerBuildCache,
+            size_bytes,
+        )
     })
+}
+
+/// Docker Desktop (WSL, Windows, macOS) keeps images and build cache in its own virtual disk,
+/// so pruning gives the space back there, not to the scanned disk.
+fn docker_desktop_disk(operating_system: &str) -> Option<&'static str> {
+    operating_system
+        .contains("Docker Desktop")
+        .then_some("Docker Desktop's virtual disk")
 }
 
 fn docker_builder_prune(estimated_bytes: u64) -> io::Result<u64> {
@@ -741,13 +810,54 @@ fn tool_cache_candidate(
         ));
     }
 
-    // Upper bound: some cleaners (e.g. `pnpm store prune`) keep referenced entries.
+    // Entries still hard linked from a project (pnpm's node_modules, uv's virtual environments)
+    // are not counted: deleting them gives nothing back, and `pnpm store prune` keeps them.
     let size_bytes = measure_dir(&dir, &mut report.warnings);
 
-    Ok(CleanupCandidate {
-        path: dir,
-        kind,
-        size_bytes,
+    Ok(CleanupCandidate::new(dir, kind, size_bytes))
+}
+
+/// Stores of older pnpm versions next to the current one (`v3`, `v10` beside `v11`). pnpm only
+/// uses and prunes the current store, so the others are left behind after an upgrade. Files
+/// still linked from an old install survive their deletion, so those projects keep working.
+fn pnpm_old_store_candidates(current: &Path, warnings: &mut Vec<String>) -> Vec<CleanupCandidate> {
+    let (Some(parent), Some(current_name)) = (current.parent(), current.file_name()) else {
+        return Vec::new();
+    };
+    let entries = match fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(error) => {
+            warnings.push(format!("could not read {}: {error}", parent.display()));
+            return Vec::new();
+        }
+    };
+
+    let mut stores: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .filter(|entry| entry.file_type().is_ok_and(|file_type| file_type.is_dir()))
+        .map(|entry| entry.path())
+        .filter(|path| path.file_name() != Some(current_name))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(is_store_version)
+        })
+        .collect();
+    stores.sort();
+
+    stores
+        .into_iter()
+        .map(|path| {
+            let size_bytes = measure_dir(&path, warnings);
+            CleanupCandidate::new(path, CleanupKind::PnpmOldStore, size_bytes)
+        })
+        .collect()
+}
+
+/// pnpm names its store directories after the store format: `v3`, `v10`, `v11`.
+fn is_store_version(name: &str) -> bool {
+    name.strip_prefix('v').is_some_and(|digits| {
+        !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
     })
 }
 
@@ -833,7 +943,40 @@ fn has_temp_extension(path: &Path) -> bool {
         })
 }
 
+/// Space that deleting `dir` gives back. A file with several hard links is freed only when its
+/// last link goes, so it counts once, and only when every link is inside `dir`: pnpm's
+/// node_modules and uv's virtual environments are hard links into their stores.
 fn measure_dir(dir: &Path, warnings: &mut Vec<String>) -> u64 {
+    measure_tree(dir, &mut HardLinks::default(), warnings)
+}
+
+/// Links seen so far of each multiply linked file, by (device, inode).
+#[cfg_attr(not(unix), allow(dead_code))]
+#[derive(Default)]
+struct HardLinks(HashMap<(u64, u64), u64>);
+
+impl HardLinks {
+    #[cfg(unix)]
+    fn reclaimable_len(&mut self, metadata: &fs::Metadata) -> u64 {
+        use std::os::unix::fs::MetadataExt;
+
+        let links = metadata.nlink();
+        if links <= 1 {
+            return metadata.len();
+        }
+        let seen = self.0.entry((metadata.dev(), metadata.ino())).or_insert(0);
+        *seen += 1;
+        if *seen == links { metadata.len() } else { 0 }
+    }
+
+    // The link count is not exposed by stable std on other platforms.
+    #[cfg(not(unix))]
+    fn reclaimable_len(&mut self, metadata: &fs::Metadata) -> u64 {
+        metadata.len()
+    }
+}
+
+fn measure_tree(dir: &Path, links: &mut HardLinks, warnings: &mut Vec<String>) -> u64 {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) => {
@@ -877,7 +1020,7 @@ fn measure_dir(dir: &Path, warnings: &mut Vec<String>) -> u64 {
 
         if file_type.is_file() {
             match entry.metadata() {
-                Ok(metadata) => total = total.saturating_add(metadata.len()),
+                Ok(metadata) => total = total.saturating_add(links.reclaimable_len(&metadata)),
                 Err(error) => warnings.push(format!(
                     "could not read metadata for {} while sizing: {error}",
                     path.display()
@@ -887,7 +1030,7 @@ fn measure_dir(dir: &Path, warnings: &mut Vec<String>) -> u64 {
         }
 
         if file_type.is_dir() {
-            total = total.saturating_add(measure_dir(&path, warnings));
+            total = total.saturating_add(measure_tree(&path, links, warnings));
         }
     }
 
@@ -923,8 +1066,9 @@ fn candidate_prefix(config: &Config) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::{
-        CleanupCandidate, CleanupKind, ScanReport, has_temp_extension, is_junk_file, is_repository,
-        parse_docker_size, project_dir_kind, render_report, scan_tree,
+        CleanupCandidate, CleanupKind, ScanReport, docker_desktop_disk, format_bytes,
+        has_temp_extension, is_junk_file, is_repository, parse_docker_size,
+        pnpm_old_store_candidates, project_dir_kind, render_report, scan_tree,
     };
     use crate::cli::{Command, Config};
     use crate::progress::Spinner;
@@ -1066,11 +1210,11 @@ mod tests {
             plain: false,
         };
         let report = ScanReport {
-            candidates: vec![CleanupCandidate {
-                path: Path::new("/tmp/work/node_modules").to_path_buf(),
-                kind: CleanupKind::NodeModules,
-                size_bytes: 1024,
-            }],
+            candidates: vec![CleanupCandidate::new(
+                Path::new("/tmp/work/node_modules").to_path_buf(),
+                CleanupKind::NodeModules,
+                1024,
+            )],
             ..Default::default()
         };
 
@@ -1079,6 +1223,120 @@ mod tests {
         assert!(rendered.contains("Mode: report"));
         assert!(rendered.contains("Root: /tmp/work"));
         assert!(rendered.contains("Nothing was deleted. Run `kika clean`"));
+    }
+
+    #[test]
+    fn keeps_space_on_other_disks_out_of_the_total() {
+        let config = Config {
+            command: Command::Report,
+            root: Path::new("/tmp/work").to_path_buf(),
+            yes: false,
+            include_old_files: false,
+            older_than_days: None,
+            output: None,
+            global_caches: Default::default(),
+            plain: false,
+        };
+        let docker = CleanupCandidate {
+            elsewhere: docker_desktop_disk("Docker Desktop"),
+            ..CleanupCandidate::new(
+                PathBuf::from("<docker build cache>"),
+                CleanupKind::DockerBuildCache,
+                5 * 1024 * 1024,
+            )
+        };
+        let report = ScanReport {
+            candidates: vec![
+                CleanupCandidate::new(
+                    PathBuf::from("/tmp/work/node_modules"),
+                    CleanupKind::NodeModules,
+                    1024,
+                ),
+                docker,
+            ],
+            ..Default::default()
+        };
+
+        assert_eq!(report.total_bytes(), 1024);
+        let rendered = render_report(&config, &report);
+        assert!(rendered.contains(&format!(
+            "Estimated reclaimable space: {}\n",
+            format_bytes(1024)
+        )));
+        assert!(rendered.contains(&format!(
+            "Also reclaimable on other disks (not counted above): {}\n",
+            format_bytes(5 * 1024 * 1024)
+        )));
+        assert!(rendered.contains(", on Docker Desktop's virtual disk)"));
+    }
+
+    #[test]
+    fn only_docker_desktop_keeps_its_data_on_another_disk() {
+        assert_eq!(
+            docker_desktop_disk("Docker Desktop"),
+            Some("Docker Desktop's virtual disk")
+        );
+        assert_eq!(docker_desktop_disk("Ubuntu 24.04.3 LTS"), None);
+        assert_eq!(docker_desktop_disk(""), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn counts_a_hard_linked_file_once_and_only_when_every_link_is_inside() {
+        use super::measure_dir;
+
+        let root = std::env::temp_dir().join(format!("kika-links-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let store = root.join("store");
+        let modules = root.join("app/node_modules");
+        fs::create_dir_all(&store).unwrap();
+        fs::create_dir_all(&modules).unwrap();
+        // Shared with the store, as pnpm installs a package.
+        fs::write(store.join("shared"), vec![0; 1000]).unwrap();
+        fs::hard_link(store.join("shared"), modules.join("shared")).unwrap();
+        // Only in node_modules.
+        fs::write(modules.join("own"), vec![0; 500]).unwrap();
+        // Two links, both inside node_modules.
+        fs::write(modules.join("twin"), vec![0; 300]).unwrap();
+        fs::hard_link(modules.join("twin"), modules.join("twin-link")).unwrap();
+
+        let mut warnings = Vec::new();
+        assert_eq!(measure_dir(&modules, &mut warnings), 500 + 300);
+        assert_eq!(measure_dir(&store, &mut warnings), 0);
+        assert_eq!(measure_dir(&root, &mut warnings), 1000 + 500 + 300);
+        assert!(warnings.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn finds_the_stores_older_pnpm_versions_left_beside_the_current_one() {
+        let root = std::env::temp_dir().join(format!("kika-pnpm-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        for dir in ["v3/files", "v10/files", "v11/files", "tmp", "v", "vx1"] {
+            fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        fs::write(root.join("v3/files/a"), vec![0; 30]).unwrap();
+        fs::write(root.join("v10/files/a"), vec![0; 100]).unwrap();
+        fs::write(root.join("v11/files/a"), vec![0; 110]).unwrap();
+
+        let mut warnings = Vec::new();
+        let old = pnpm_old_store_candidates(&root.join("v11"), &mut warnings);
+
+        let found: Vec<(PathBuf, CleanupKind, u64)> = old
+            .into_iter()
+            .map(|candidate| (candidate.path, candidate.kind, candidate.size_bytes))
+            .collect();
+        assert_eq!(
+            found,
+            vec![
+                (root.join("v10"), CleanupKind::PnpmOldStore, 100),
+                (root.join("v3"), CleanupKind::PnpmOldStore, 30),
+            ]
+        );
+        assert!(warnings.is_empty());
+
+        fs::remove_dir_all(&root).unwrap();
     }
 
     #[cfg(windows)]
